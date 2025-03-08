@@ -19,6 +19,7 @@ import {
 import { McpServer } from '../mcp/server.js';
 import { McpClient } from '../mcp/client.js';
 import { LlmProviderFactory } from '../llm/provider.js';
+import { getProjectPath } from '../utils/config-paths.js';
 
 // Initialize plugin registry
 const registry = new PluginRegistry();
@@ -301,6 +302,15 @@ export async function createAgent(options: any) {
       fs.mkdirSync(agentDir, { recursive: true });
     }
     
+    // Create database directory using proper path resolution for this agent
+    const agentDbPath = getProjectPath(answers.name, 'db', 'documentation.db');
+    
+    // If force is enabled and the database exists, delete it to ensure a fresh start
+    if (options.force && fs.existsSync(agentDbPath)) {
+      fs.unlinkSync(agentDbPath);
+      spinner.info('Existing documentation database removed for fresh start.');
+    }
+    
     // Change to the agent directory
     process.chdir(agentDir);
     
@@ -364,6 +374,43 @@ export async function createAgent(options: any) {
       } catch (error) {
         spinner.warn(`Failed to install plugin ${plugin}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    
+    // Load documentation for the selected plugins in the background
+    spinner.text = 'Preparing documentation for selected plugins';
+    try {
+      // Start the MCP server if not already running, with project-specific database path
+      const mcpServer = new McpServer({
+        docsBasePath: process.cwd(),
+        documentStore: {
+          dbPath: agentDbPath
+        }
+      });
+      await mcpServer.start();
+      
+      // Create an MCP client
+      const mcpClient = new McpClient();
+      
+      // Prepare agent configuration for documentation loading
+      const agentConfig = {
+        plugins: answers.plugins.map((p: string) => p.replace('@elizaos/', '').replace('@elizaos-plugins/', '')),
+        dependencies: answers.plugins.reduce((deps: Record<string, string>, plugin: string) => {
+          deps[plugin] = '^1.0.0'; // Version doesn't matter for documentation loading
+          return deps;
+        }, {})
+      };
+      
+      // Load documentation for the agent's components
+      spinner.text = 'Loading documentation for plugins - this may take a moment';
+      await mcpClient.populateAgentDocumentation(agentConfig);
+      
+      spinner.succeed('Plugin documentation loaded successfully');
+      
+      // Stop the server after documentation is loaded
+      await mcpServer.stop();
+    } catch (error) {
+      spinner.warn(`Failed to load plugin documentation: ${error instanceof Error ? error.message : String(error)}`);
+      // Continue with agent creation even if documentation loading fails
     }
     
     // Generate strategy based on the selections
@@ -460,8 +507,59 @@ export async function runAgent(options: any) {
       return;
     }
     
+    // Load the character file to get plugin information
+    const characterFile = path.join('characters', characterPath);
+    spinner.text = 'Loading agent character';
+    const character = JSON.parse(fs.readFileSync(characterFile, 'utf-8'));
+    
+    // Load the package.json to get dependencies
+    spinner.text = 'Analyzing agent dependencies';
+    const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+    
+    // Load documentation for the agent's plugins in the background
+    spinner.text = 'Preparing plugin documentation';
+    try {
+      // Get the project name from the current directory
+      const projectName = path.basename(process.cwd());
+      
+      // Use the proper project-specific database path
+      const agentDbPath = getProjectPath(projectName, 'db', 'documentation.db');
+      
+      // Start the MCP server if not already running
+      spinner.text = 'Starting MCP server';
+      const mcpServer = new McpServer({
+        docsBasePath: process.cwd(),
+        documentStore: {
+          dbPath: agentDbPath
+        }
+      });
+      await mcpServer.start();
+      
+      // Create an MCP client
+      const mcpClient = new McpClient();
+      
+      // Prepare agent configuration for documentation loading
+      spinner.text = 'Loading documentation for agent components';
+      const agentConfig = {
+        // Extract plugins from character
+        plugins: character.plugins?.map((p: string) => p.replace('@elizaos/', '').replace('@elizaos-plugins/', '')) || [],
+        // Extract dependencies from package.json
+        dependencies: packageJson.dependencies || {}
+      };
+      
+      // Load documentation for the agent's components
+      await mcpClient.populateAgentDocumentation(agentConfig);
+      
+      spinner.succeed('Agent documentation loaded successfully');
+      
+      // Don't stop the server as it will be needed for agent execution
+    } catch (error) {
+      spinner.warn(`Failed to load agent documentation: ${error instanceof Error ? error.message : String(error)}`);
+      // Continue with agent execution even if documentation loading fails
+    }
+    
     // Start the agent
-    spinner.succeed('Agent is running');
+    spinner.succeed('Agent is ready to run');
     console.log(`${chalk.yellow('Character:')} ${characterPath}`);
     console.log(`${chalk.yellow('Press Ctrl+C to stop the agent')}\n`);
     

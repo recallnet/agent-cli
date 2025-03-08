@@ -16,6 +16,7 @@ import { McpServer } from './lib/mcp/server.js';
 import { strategyCommand } from './lib/cli/strategy.js';
 import { setupCommand } from './lib/cli/setup.js';
 import { startCommand } from './lib/cli/start.js';
+import { getDataPath } from './lib/utils/config-paths.js';
 
 // Initialize environment variables
 config();
@@ -76,6 +77,9 @@ program
   .action(async (options) => {
     const mcpServer = new McpServer({
       port: options.port ? Number(options.port) : undefined,
+      documentStore: {
+        dbPath: getDataPath('db', 'documentation.db')
+      }
     });
     
     if (options.start) {
@@ -116,8 +120,14 @@ program
     console.log('🧪 Starting MCP documentation test');
     
     // Start MCP server
-    const port = 3100;
-    await startMcpServer({ port, cacheTtl: 0 }); // Use cacheTtl 0 to force fresh data
+    const port = 3335;
+    await startMcpServer({ 
+      port, 
+      cacheTtl: 0, // Use cacheTtl 0 to force fresh data
+      documentStore: {
+        dbPath: getDataPath('db', 'documentation.db')
+      }
+    });
     console.log(`🧪 MCP server started on port ${port}`);
     
     // Create client

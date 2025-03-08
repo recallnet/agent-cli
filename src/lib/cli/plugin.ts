@@ -8,6 +8,7 @@ import { PluginRegistry } from '../plugins/registry.js';
 import { McpClient } from '../mcp/client.js';
 import { LlmProviderFactory } from '../llm/provider.js';
 import { McpServer } from '../mcp/server.js';
+import { getDataPath } from '../utils/config-paths.js';
 
 // Create a singleton plugin registry
 const registry = new PluginRegistry();
@@ -308,7 +309,11 @@ export function registerPluginCommand(program: Command): Command {
     .action(async (options) => {
       try {
         // Start MCP server if not running
-        const mcpServer = new McpServer();
+        const mcpServer = new McpServer({
+          documentStore: {
+            dbPath: getDataPath('db', 'documentation.db')
+          }
+        });
         const spinner = ora('Starting MCP server...').start();
         await mcpServer.start();
         spinner.succeed('MCP server started');
@@ -435,7 +440,11 @@ Describe your strategy here. Include:
       try {
         // Start MCP server if not running and not skipped
         if (options.mcp !== false) {
-          mcpServer = new McpServer();
+          mcpServer = new McpServer({
+            documentStore: {
+              dbPath: getDataPath('db', 'documentation.db')
+            }
+          });
           spinner.text = 'Starting MCP server...';
           await mcpServer.start();
           spinner.succeed('MCP server started');
@@ -492,7 +501,11 @@ Describe your strategy here. Include:
     .action(async (pluginName) => {
       try {
         // Start MCP server if not running
-        const mcpServer = new McpServer();
+        const mcpServer = new McpServer({
+          documentStore: {
+            dbPath: getDataPath('db', 'documentation.db')
+          }
+        });
         const spinner = ora('Starting MCP server...').start();
         await mcpServer.start();
         spinner.succeed('MCP server started');
@@ -540,7 +553,11 @@ Describe your strategy here. Include:
     .action(async (options) => {
       try {
         // Start MCP server if not running
-        const mcpServer = new McpServer();
+        const mcpServer = new McpServer({
+          documentStore: {
+            dbPath: getDataPath('db', 'documentation.db')
+          }
+        });
         const spinner = ora('Starting MCP server...').start();
         await mcpServer.start();
         spinner.succeed('MCP server started');

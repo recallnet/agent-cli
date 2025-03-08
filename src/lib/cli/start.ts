@@ -11,6 +11,7 @@ import { McpClient } from '../mcp/client.js';
 import { McpServer } from '../mcp/server.js';
 import { AgentSetup } from '../agent/setup.js';
 import { setApiKey } from './llm.js';
+import { getDataPath } from '../utils/config-paths.js';
 
 // Create config store
 const config = new Conf({
@@ -76,6 +77,10 @@ export async function startWorkflow(projectName: string, options: { force?: bool
     port: 3333, // Use default port
     cacheTtl: 3600000, // 1 hour cache
     pluginRegistryUrl: 'https://raw.githubusercontent.com/elizaos/registry/main/index.json', // Use GitHub registry for production
+    // Use proper data path for documentation database
+    documentStore: {
+      dbPath: getDataPath('db', 'documentation.db')
+    }
   });
   
   try {

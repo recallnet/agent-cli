@@ -325,12 +325,36 @@ async function exampleUsage() {
   }
   
   /**
-   * Search for plugins matching a query
+   * Search for plugins and documentation matching a query
+   * @param query The search query
+   * @param options Search options
+   * @returns Array of search results
    */
-  async searchPlugins(query: string): Promise<any[]> {
+  async searchPlugins(
+    query: string, 
+    options: {
+      plugin?: string;      // Optional plugin name to limit the search
+      limit?: number;       // Maximum number of results to return
+      useVector?: boolean;  // Whether to use vector search (default: true)
+    } = {}
+  ): Promise<Array<{
+    id: string;
+    content: string;
+    title: string;
+    source: string;
+    score: number;
+    relevance: number;
+  }>> {
     try {
+      console.log(`🔍 MCP CLIENT: Searching for "${query}"${options.plugin ? ` in plugin ${options.plugin}` : ''}`);
+      
       const response = await axios.get(`${this.options.baseUrl}/search`, {
-        params: { query },
+        params: { 
+          query,
+          plugin: options.plugin,
+          limit: options.limit,
+          vector: options.useVector !== false ? 'true' : 'false'
+        },
         timeout: this.options.timeout,
       });
       
@@ -339,6 +363,33 @@ async function exampleUsage() {
       console.error(`Failed to search plugins: ${error instanceof Error ? error.message : String(error)}`);
       throw new Error(`MCP client search error: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+  
+  /**
+   * Search documentation using vector similarity
+   * @param query The search query
+   * @param options Search options
+   * @returns Array of search results with similarity scores
+   */
+  async vectorSearch(
+    query: string,
+    options: {
+      plugin?: string;      // Optional plugin name to limit the search
+      limit?: number;       // Maximum number of results to return
+    } = {}
+  ): Promise<Array<{
+    id: string;
+    content: string;
+    title: string;
+    source: string;
+    score: number;
+    relevance: number;
+  }>> {
+    // This is a convenience method that forces vector search
+    return this.searchPlugins(query, {
+      ...options,
+      useVector: true
+    });
   }
   
   /**
@@ -585,6 +636,169 @@ async function exampleUsage() {
       
       console.error(`❌ ERROR: Failed to fetch documentation for ${pluginName}`);
       console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  /**
+   * Populate documentation for a plugin into the SQLite database
+   * @param pluginName The name of the plugin to populate
+   * @param force Whether to force re-population even if documentation exists
+   * @returns Result of the population operation
+   */
+  async populatePluginDocumentation(
+    pluginName: string,
+    force: boolean = false
+  ): Promise<{
+    status: string;
+    message: string;
+    document_id?: number;
+    chunks?: number;
+  }> {
+    try {
+      console.log(`📝 MCP CLIENT: Populating documentation for plugin ${pluginName}`);
+      
+      const response = await axios.post(
+        `${this.options.baseUrl}/populate-docs`,
+        { plugin: pluginName, force },
+        { timeout: this.options.timeout }
+      );
+      
+      return response.data;
+    } catch (error) {
+      console.error(`Failed to populate documentation: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`MCP client documentation population error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  /**
+   * Populate documentation for multiple plugins
+   * @param pluginNames Array of plugin names to populate
+   * @param force Whether to force re-population even if documentation exists
+   * @returns Results of the population operations
+   */
+  async populateMultiplePluginDocumentation(
+    pluginNames: string[],
+    force: boolean = false
+  ): Promise<Record<string, {
+    status: string;
+    message: string;
+    document_id?: number;
+    chunks?: number;
+  }>> {
+    const results: Record<string, any> = {};
+    
+    // Process plugins sequentially to avoid overwhelming the server
+    for (const pluginName of pluginNames) {
+      try {
+        results[pluginName] = await this.populatePluginDocumentation(pluginName, force);
+      } catch (error) {
+        results[pluginName] = {
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+    
+    return results;
+  }
+  
+  /**
+   * Populate documentation for an agent's required plugins, clients, and adapters
+   * This is more efficient than loading all available documentation
+   * @param agentConfig The agent configuration containing required plugins
+   * @param force Whether to force re-population even if documentation exists
+   * @returns Results of the population operations
+   */
+  async populateAgentDocumentation(
+    agentConfig: {
+      plugins?: string[];
+      clients?: string[];
+      adapters?: string[];
+      dependencies?: Record<string, string>;
+    },
+    force: boolean = false
+  ): Promise<Record<string, any>> {
+    console.log('📝 MCP CLIENT: Populating documentation for agent-specific components');
+    
+    const allComponents: string[] = [];
+    
+    // Collect all components from the agent config
+    if (agentConfig.plugins && agentConfig.plugins.length > 0) {
+      allComponents.push(...agentConfig.plugins);
+    }
+    
+    if (agentConfig.clients && agentConfig.clients.length > 0) {
+      // Add 'client-' prefix if not present
+      const clients = agentConfig.clients.map(c => 
+        c.startsWith('client-') || c.includes('/client-') ? c : `client-${c}`
+      );
+      allComponents.push(...clients);
+    }
+    
+    if (agentConfig.adapters && agentConfig.adapters.length > 0) {
+      // Add 'adapter-' prefix if not present
+      const adapters = agentConfig.adapters.map(a => 
+        a.startsWith('adapter-') || a.includes('/adapter-') ? a : `adapter-${a}`
+      );
+      allComponents.push(...adapters);
+    }
+    
+    // Also add any dependencies from package.json that look like Eliza plugins
+    if (agentConfig.dependencies) {
+      const pluginDeps = Object.keys(agentConfig.dependencies).filter(
+        dep => dep.startsWith('@elizaos/') || dep.startsWith('@elizaos-plugins/')
+      );
+      allComponents.push(...pluginDeps);
+    }
+    
+    // Normalize component names
+    const normalizedComponents = allComponents.map(component => {
+      // Strip @elizaos/ or @elizaos-plugins/ prefix if present
+      let normalized = component
+        .replace(/^@elizaos\//, '')
+        .replace(/^@elizaos-plugins\//, '');
+      
+      // Ensure plugin- prefix for components that don't have client- or adapter- prefix
+      if (!normalized.startsWith('client-') && 
+          !normalized.startsWith('adapter-') && 
+          !normalized.includes('/client-') && 
+          !normalized.includes('/adapter-')) {
+        normalized = normalized.startsWith('plugin-') ? normalized : `plugin-${normalized}`;
+      }
+      
+      return normalized;
+    });
+    
+    // Remove duplicates
+    const uniqueComponents = [...new Set(normalizedComponents)];
+    
+    console.log(`📝 MCP CLIENT: Found ${uniqueComponents.length} components to populate`);
+    
+    // Populate documentation for all components
+    return this.populateMultiplePluginDocumentation(uniqueComponents, force);
+  }
+  
+  /**
+   * Get statistics about the document store
+   * @returns Document store statistics
+   */
+  async getDocumentStats(): Promise<{
+    totalDocuments: number;
+    totalChunks: number;
+    totalEmbeddings: number;
+    pluginCounts: Record<string, number>;
+    lastUpdated: string;
+  }> {
+    try {
+      const response = await axios.get(
+        `${this.options.baseUrl}/doc-stats`,
+        { timeout: this.options.timeout }
+      );
+      
+      return response.data;
+    } catch (error) {
+      console.error(`Failed to get document stats: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`MCP client document stats error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 } 

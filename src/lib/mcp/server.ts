@@ -1,14 +1,17 @@
-import http from 'http';
+import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 import chalk from 'chalk';
 import { EventEmitter } from 'events';
-import axios from 'axios';
-import { PluginRegistry } from '../plugins/registry.js';
-import * as path from 'path';
-import fs from 'fs/promises';
-import { existsSync } from 'fs';
-import * as cheerio from 'cheerio';
-import { AxiosResponse } from 'axios';
+import axios, { AxiosResponse } from 'axios';
 import { URL } from 'url';
+import * as cheerio from 'cheerio';
+import { DocumentStore } from './document-store.js';
+import { TextEmbeddings } from './text-embeddings.js';
+import { DocumentChunker } from './document-chunker.js';
+import { DocumentMetadata } from './document-store.js';
+import { PluginRegistry } from '../plugins/registry.js';
+import { getDataPath } from '../utils/config-paths.js';
 
 /**
  * MCP Server options
@@ -21,6 +24,9 @@ export interface McpServerOptions {
   githubApiToken?: string; // API token for GitHub API access
   maxFileSizeBytes?: number; // Maximum file size to fetch in bytes
   maxRepositoryFiles?: number; // Maximum number of files to fetch from a repository
+  documentStore?: {
+    dbPath: string;  // Custom path for the SQLite database
+  };
 }
 
 /**
@@ -126,6 +132,9 @@ export class McpServer extends EventEmitter {
   private options: McpServerOptions;
   private cache = new Map<string, DocResponse>();
   private pluginRegistry: PluginRegistry;
+  private documentStore: DocumentStore;
+  private textEmbeddings: TextEmbeddings;
+  private documentChunker: DocumentChunker;
   
   constructor(options: Partial<McpServerOptions> = {}) {
     super();
@@ -145,6 +154,13 @@ export class McpServer extends EventEmitter {
     
     // Initialize plugin registry
     this.pluginRegistry = new PluginRegistry(this.options.pluginRegistryUrl);
+    
+    // Initialize document store with custom path if provided
+    const documentStorePath = this.options.documentStore?.dbPath || getDataPath('docs', 'documentation.db');
+    this.documentStore = new DocumentStore(documentStorePath);
+    
+    this.textEmbeddings = new TextEmbeddings();
+    this.documentChunker = new DocumentChunker();
   }
   
   /**
@@ -158,13 +174,169 @@ export class McpServer extends EventEmitter {
     
     this.server = http.createServer(this.handleRequest.bind(this));
     
-    return new Promise((resolve) => {
+    // Ensure the data directory exists for SQLite before starting
+    const dbPath = this.documentStore.getDbPath();
+    await fs.promises.mkdir(path.dirname(dbPath), { recursive: true });
+    
+    const serverStartPromise = new Promise<void>((resolve) => {
       this.server?.listen(this.options.port, () => {
         console.log(chalk.green(`✓ MCP server started on port ${this.options.port}`));
         this.emit('started', { port: this.options.port });
         resolve();
       });
     });
+    
+    // Start the server
+    await serverStartPromise;
+    
+    // Note: We no longer automatically populate documentation for all plugins
+    // Documentation will be loaded on-demand when needed
+    
+    return Promise.resolve();
+  }
+  
+  /**
+   * Populate documentation for specified plugins
+   * @param pluginNames Array of plugin names to populate documentation for
+   * @param force Whether to force re-population even if documentation exists
+   * @returns Results of the population operations
+   */
+  public async populatePluginDocumentation(
+    pluginNames: string[],
+    force: boolean = false
+  ): Promise<Record<string, {
+    status: string;
+    message: string;
+    docId?: number;
+    chunks?: number;
+  }>> {
+    console.log(`📚 MCP: Populating documentation for ${pluginNames.length} plugins`);
+    
+    const results: Record<string, {
+      status: string;
+      message: string;
+      docId?: number;
+      chunks?: number;
+    }> = {};
+    
+    // Process plugins in batches to avoid overloading
+    const batchSize = 5;
+    let populated = 0;
+    
+    // Process plugins in smaller batches
+    for (let i = 0; i < pluginNames.length; i += batchSize) {
+      const batch = pluginNames.slice(i, i + batchSize);
+      console.log(`📚 MCP: Processing documentation batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(pluginNames.length/batchSize)}`);
+      
+      // Process each plugin in the batch
+      const batchPromises = batch.map(async (pluginName) => {
+        try {
+          // Check if we already have docs for this plugin
+          const existingDocs = this.documentStore.getPluginDocuments(pluginName);
+          
+          if (existingDocs.length > 0 && !force) {
+            console.log(`📚 MCP: Documentation for ${pluginName} already exists in database`);
+            return {
+              pluginName,
+              result: {
+                status: 'skipped',
+                message: `Documentation for '${pluginName}' already exists`,
+                docId: existingDocs[0]
+              }
+            };
+          }
+          
+          // Fetch documentation
+          console.log(`📚 MCP: Fetching documentation for ${pluginName}`);
+          const docResponse = await this.fetchPluginDocumentation(pluginName);
+          
+          // Store in database
+          const docId = await this.storeDocumentationInDatabase(pluginName, docResponse);
+          
+          console.log(`📚 MCP: Successfully populated documentation for ${pluginName}`);
+          return {
+            pluginName,
+            result: {
+              status: 'success',
+              message: `Documentation for '${pluginName}' stored successfully`,
+              docId,
+              chunks: docResponse.content ? this.documentChunker.chunkMarkdown(docResponse.content).length : 0
+            }
+          };
+        } catch (error) {
+          console.error(`📚 MCP: Error populating ${pluginName} documentation: ${error instanceof Error ? error.message : String(error)}`);
+          return {
+            pluginName,
+            result: {
+              status: 'error',
+              message: `Failed to populate documentation: ${error instanceof Error ? error.message : String(error)}`
+            }
+          };
+        }
+      });
+      
+      // Wait for batch to complete
+      const batchResults = await Promise.all(batchPromises);
+      
+      // Store results
+      for (const { pluginName, result } of batchResults) {
+        results[pluginName] = result;
+        if (result.status === 'success') {
+          populated++;
+        }
+      }
+      
+      // Simple progress indication
+      console.log(`📚 MCP: Populated ${populated} plugin documentations so far`);
+      
+      // Brief pause between batches to avoid overwhelming the server
+      if (i + batchSize < pluginNames.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    console.log(`📚 MCP: Completed plugin documentation population (${populated}/${pluginNames.length} successful)`);
+    return results;
+  }
+  
+  /**
+   * Populate documentation for common plugins
+   * This is now a public method to be called manually when needed
+   * @param force Whether to force re-population even if documentation exists
+   */
+  public async populateCommonPluginDocumentation(force: boolean = false): Promise<Record<string, any>> {
+    console.log('📚 MCP: Starting population of common plugin documentation');
+    
+    try {
+      // Get plugins from registry
+      const plugins = await this.pluginRegistry.getPlugins();
+      const pluginNames = Object.keys(plugins);
+      
+      if (pluginNames.length === 0) {
+        console.log('📚 MCP: No plugins found in registry to populate');
+        return {};
+      }
+      
+      console.log(`📚 MCP: Found ${pluginNames.length} plugins in registry`);
+      
+      // Start with most common/important plugins first
+      const priorityPlugins = [
+        'ccxt', 'binance', 'coinbase', 'bittensor', 'exchange', 
+        'technical-indicators', 'backtest', 'sentiment', 'news'
+      ];
+      
+      // Prioritize the list - put priority plugins first, then alphabetical
+      const sortedPlugins = [
+        ...priorityPlugins.filter(p => pluginNames.includes(p) || pluginNames.includes(`plugin-${p}`)),
+        ...pluginNames.filter(p => !priorityPlugins.includes(p) && !priorityPlugins.includes(p.replace('plugin-', '')))
+      ];
+      
+      // Use the main population method
+      return await this.populatePluginDocumentation(sortedPlugins, force);
+    } catch (error) {
+      console.error(`📚 MCP: Error in common plugin documentation population: ${error instanceof Error ? error.message : String(error)}`);
+      return { error: String(error) };
+    }
   }
   
   /**
@@ -193,114 +365,307 @@ export class McpServer extends EventEmitter {
   }
   
   /**
-   * Get documentation from cache or fetch it
+   * Get documentation based on a request
    */
   private async getDocumentation(request: DocRequest): Promise<DocResponse> {
-    console.log(`🔎 SERVER: Documentation request received for ${request.type} - ${request.query}`);
+    const { type, query, params } = request;
     
-    const cacheKey = `${request.type}:${request.query}:${JSON.stringify(request.params || {})}`;
-    
-    // Check cache first
-    const cached = this.cache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < this.options.cacheTtl) {
-      console.log(`🔎 SERVER: Cache hit for ${request.query}`);
-      this.emit('cache-hit', { request });
-      return cached;
+    // Try to get from in-memory cache first
+    const cacheKey = `${type}:${query}:${JSON.stringify(params || {})}`;
+    if (this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey)!;
+      const now = Date.now();
+      
+      // Check if cache is still valid
+      if (now - cached.timestamp < this.options.cacheTtl) {
+        console.log(`📚 MCP: Cache hit for ${type} - ${query}`);
+        return cached;
+      } else {
+        console.log(`📚 MCP: Cache expired for ${type} - ${query}`);
+        this.cache.delete(cacheKey);
+      }
     }
     
-    console.log(`🔎 SERVER: Cache miss for ${request.query}, fetching fresh documentation`);
+    // Next, check if we have it in the SQLite database
+    if (type === DocSourceType.PLUGIN) {
+      // Look for the plugin documentation in our database
+      const docIds = this.documentStore.getPluginDocuments(query);
+      if (docIds.length > 0) {
+        // We have documentation for this plugin in the database
+        const doc = this.documentStore.getDocument(docIds[0]);
+        if (doc) {
+          console.log(`📚 MCP: Found documentation for ${query} in SQLite database`);
+          const response: DocResponse = {
+            content: doc.chunks.join('\n\n'),
+            source: doc.metadata.source,
+            timestamp: doc.metadata.timestamp,
+            metadata: {
+              ...doc.metadata,
+              fromDatabase: true
+            }
+          };
+          
+          // Also update in-memory cache
+          this.cache.set(cacheKey, response);
+          
+          // If a context is provided, optimize the documentation for relevance
+          if (params?.context) {
+            return this.optimizeDocumentationForContext(response, params.context, docIds[0]);
+          }
+          
+          return response;
+        }
+      }
+    }
     
-    // Fetch documentation based on source type
-    let docResponse: DocResponse;
+    // Not found in cache or database, fetch from external source
+    console.log(`📚 MCP: Fetching ${type} documentation for ${query} from external source`);
+    let response: DocResponse;
     
     try {
-      console.log(`🔎 SERVER: Fetching ${request.type} documentation for: ${request.query}`);
-      
-      switch (request.type) {
+      switch (type) {
       case DocSourceType.PLUGIN:
-        console.log('🔎 SERVER: Routing to fetchPluginDocumentation');
-        docResponse = await this.fetchPluginDocumentation(request.query, request.params);
+        response = await this.fetchPluginDocumentation(query, params);
         break;
       case DocSourceType.GITHUB:
-        console.log('🔎 SERVER: Routing to fetchGithubDocumentation');
-        docResponse = await this.fetchGithubDocumentation(request.query, request.params);
+        response = await this.fetchGithubDocumentation(query, params);
         break;
       case DocSourceType.GITHUB_REPO:
-        console.log('🔎 SERVER: Routing to scanGithubRepository');
-        docResponse = await this.scanGithubRepository(request.query, request.params);
+        response = await this.scanGithubRepository(query, params);
         break;
       case DocSourceType.URL:
-        console.log('🔎 SERVER: Routing to fetchUrlDocumentation');
-        docResponse = await this.fetchUrlDocumentation(request.query);
+        response = await this.fetchUrlDocumentation(query);
         break;
       case DocSourceType.MARKDOWN:
-        console.log('🔎 SERVER: Routing to fetchMarkdownDocumentation');
-        docResponse = await this.fetchMarkdownDocumentation(request.query);
+        response = await this.fetchMarkdownDocumentation(query);
         break;
       case DocSourceType.COMPETITION:
-        docResponse = await this.fetchCompetitionDocumentation(request.query);
+        response = await this.fetchCompetitionDocumentation(query);
         break;
       case DocSourceType.STRATEGY:
-        docResponse = await this.fetchStrategyDocumentation(request.query);
+        response = await this.fetchStrategyDocumentation(query);
         break;
       case DocSourceType.CODE_ANALYSIS:
-        docResponse = await this.analyzeCode(request.query, request.params);
+        response = await this.analyzeCode(query, params);
         break;
       default:
-        throw new Error(`Unsupported documentation source type: ${request.type}`);
+        throw new Error(`Unsupported documentation type: ${type}`);
       }
       
-      // Optimize the documentation content for relevance if a context is provided
-      if (request.params?.context) {
-        docResponse = await this.optimizeDocumentationForContext(docResponse, request.params.context);
+      // Store in cache
+      this.cache.set(cacheKey, response);
+      
+      // Store in SQLite database if it's a plugin
+      if (type === DocSourceType.PLUGIN && response) {
+        const docId = await this.storeDocumentationInDatabase(query, response);
+        
+        // If a context is provided, optimize the documentation for relevance
+        if (params?.context && docId) {
+          return this.optimizeDocumentationForContext(response, params.context, docId);
+        }
+      } else if (params?.context) {
+        // For non-plugin docs, still optimize if context is provided
+        return this.optimizeDocumentationForContext(response, params.context);
       }
       
-      // Cache the result
-      this.cache.set(cacheKey, docResponse);
-      this.emit('cache-miss', { request });
-      
-      return docResponse;
+      return response;
     } catch (error) {
-      console.error(`Error fetching documentation: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`📚 MCP: Error fetching documentation: ${error instanceof Error ? error.message : String(error)}`);
+      
+      // For plugins, try to generate fallback doc if fetch fails
+      if (type === DocSourceType.PLUGIN) {
+        console.log(`📚 MCP: Generating fallback documentation for ${query}`);
+        response = await this.generateFallbackPluginDocumentation(query);
+        this.cache.set(cacheKey, response);
+        
+        // Also store the fallback documentation in the database
+        const docId = await this.storeDocumentationInDatabase(query, response, true);
+        
+        // If a context is provided, optimize the documentation
+        if (params?.context && docId) {
+          return this.optimizeDocumentationForContext(response, params.context, docId);
+        }
+        
+        return response;
+      }
+      
       throw error;
     }
   }
   
   /**
-   * Optimize documentation for a specific context
+   * Store documentation in the SQLite database
+   * @param pluginName Name of the plugin
+   * @param doc The documentation response
+   * @param isFallback Whether this is fallback documentation
+   * @returns The document ID if stored, undefined otherwise
    */
-  private async optimizeDocumentationForContext(doc: DocResponse, context: string): Promise<DocResponse> {
+  private async storeDocumentationInDatabase(
+    pluginName: string, 
+    doc: DocResponse, 
+    isFallback: boolean = false
+  ): Promise<number | undefined> {
     try {
-      // Create chunks from the document content
-      const chunks = this.createDocumentChunks(doc.content, doc.source);
+      console.log(`📚 MCP: Storing documentation for ${pluginName} in database${isFallback ? ' (fallback)' : ''}`);
       
-      // Calculate relevance scores for each chunk
-      const scoredChunks = this.scoreChunksForRelevance(chunks, context);
+      // Check if we already have this documentation
+      const existingDocs = this.documentStore.getPluginDocuments(pluginName);
       
-      // Sort chunks by relevance score (highest first)
-      scoredChunks.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
-      
-      // Take the most relevant chunks up to a reasonable size limit for context
-      const relevantChunks = this.selectRelevantChunks(scoredChunks, 4000);
-      
-      // Combine the relevant chunks into a coherent document
-      const optimizedContent = this.combineChunks(relevantChunks);
-      
-      // Return optimized document
-      return {
-        ...doc,
-        content: optimizedContent,
-        metadata: {
-          ...doc.metadata,
-          optimized: true,
-          relevantChunksCount: relevantChunks.length,
-          totalChunksCount: chunks.length
-        }
-      };
+      // Only store if we don't have it already or if the existing one is fallback and this is not
+      if (existingDocs.length === 0 || 
+          (isFallback === false && doc.metadata?.fromDatabase !== true)) {
+        
+        // Process and store the documentation
+        const chunks = this.documentChunker.chunkMarkdown(doc.content);
+        
+        // Create document metadata
+        const metadata: DocumentMetadata = {
+          title: doc.metadata?.title || pluginName,
+          source: doc.metadata?.source || doc.source,
+          url: doc.metadata?.url || '',
+          timestamp: doc.timestamp,
+          plugin_name: pluginName,
+          plugin_version: doc.metadata?.version || '1.0.0',
+          doc_type: 'markdown'
+        };
+        
+        // Store in SQLite
+        const docId = this.documentStore.storeDocument(metadata, chunks);
+        
+        console.log(`📚 MCP: Stored documentation for '${pluginName}' with ID ${docId} (${chunks.length} chunks)`);
+        
+        // Generate embeddings for each chunk in the background
+        this.generateEmbeddingsForDocument(docId, chunks).catch((err: unknown) => {
+          console.error(`Failed to generate embeddings for document ${docId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        
+        return docId;
+      } else {
+        console.log(`📚 MCP: Documentation for '${pluginName}' already exists in database, skipping storage`);
+        return existingDocs[0]; // Return the existing document ID
+      }
     } catch (error) {
-      console.warn(`Error optimizing documentation: ${error instanceof Error ? error.message : String(error)}`);
-      return doc; // Return original document if optimization fails
+      console.error(`📚 MCP: Error storing documentation in database: ${error instanceof Error ? error.message : String(error)}`);
+      // Don't throw here as this is a non-critical operation
+      return undefined;
     }
+  }
+  
+  /**
+   * Optimize documentation content based on a user's context
+   * @param doc The documentation to optimize
+   * @param context User's context
+   * @param documentId Optional document ID for vector search
+   * @returns Optimized documentation
+   */
+  private async optimizeDocumentationForContext(
+    doc: DocResponse, 
+    context: string,
+    documentId?: number
+  ): Promise<DocResponse> {
+    console.log(`📚 MCP: Optimizing documentation for context: "${context.substring(0, 50)}..."`);
+    
+    // If we have a document ID and it's in the database, use vector search for relevance
+    if (documentId) {
+      try {
+        // Get the full document with all chunks
+        const fullDoc = this.documentStore.getDocument(documentId);
+        if (fullDoc) {
+          // Generate embedding for the context query
+          const contextEmbedding = await this.textEmbeddings.generateEmbedding(context);
+          
+          // If we have vector embeddings in the database, use them for search
+          if (this.documentStore.getEmbeddingCount() > 0) {
+            console.log('📚 MCP: Using vector search for document optimization');
+            
+            // Search for relevant chunks using the context embedding
+            const relevantChunks = this.documentStore.searchByVector(contextEmbedding, 5);
+            
+            if (relevantChunks.length > 0) {
+              // Filter to only include chunks from our document
+              const docChunks = relevantChunks.filter(chunk => 
+                chunk.document_id === documentId
+              );
+              
+              if (docChunks.length > 0) {
+                // Create optimized content
+                const optimizedContent = docChunks
+                  .map(chunk => chunk.content)
+                  .join('\n\n');
+                
+                return {
+                  ...doc,
+                  content: optimizedContent,
+                  metadata: {
+                    ...doc.metadata,
+                    optimizedForContext: true,
+                    relevantChunksCount: docChunks.length,
+                    optimizationMethod: 'vector'
+                  }
+                };
+              }
+            }
+          }
+          
+          // Fallback to text similarity if vector search didn't yield results
+          console.log('📚 MCP: Falling back to text similarity for optimization');
+          
+          // Use text similarity to find relevant chunks
+          const relevantChunks = await this.textEmbeddings.findSimilarTexts(
+            context,
+            fullDoc.chunks,
+            5
+          );
+          
+          if (relevantChunks.length > 0) {
+            // Create optimized content
+            const optimizedContent = relevantChunks
+              .map(result => result.text)
+              .join('\n\n');
+            
+            return {
+              ...doc,
+              content: optimizedContent,
+              metadata: {
+                ...doc.metadata,
+                optimizedForContext: true,
+                relevantChunksCount: relevantChunks.length,
+                optimizationMethod: 'text-similarity'
+              }
+            };
+          }
+        }
+      } catch (error) {
+        console.error(`📚 MCP: Error optimizing with vector search: ${error instanceof Error ? error.message : String(error)}`);
+        // Fall back to traditional optimization
+      }
+    }
+    
+    // Fall back to the traditional chunk-based optimization approach
+    console.log('📚 MCP: Using traditional chunk-based optimization');
+    
+    // Create chunks from the document content
+    const chunks = this.createDocumentChunks(doc.content, doc.source);
+    
+    // Score chunks based on relevance to the context
+    const scoredChunks = this.scoreChunksForRelevance(chunks, context);
+    
+    // Select most relevant chunks that fit within a reasonable size
+    const selectedChunks = this.selectRelevantChunks(scoredChunks, 10000);
+    
+    // Combine selected chunks into a coherent document
+    const optimizedContent = this.combineChunks(selectedChunks);
+    
+    return {
+      ...doc,
+      content: optimizedContent,
+      metadata: {
+        ...doc.metadata,
+        optimizedForContext: true,
+        relevantChunksCount: selectedChunks.length,
+        optimizationMethod: 'traditional'
+      }
+    };
   }
   
   /**
@@ -994,11 +1359,11 @@ const config = {
         : path.join(this.options.docsBasePath || '', filePath);
       
       // Check if file exists
-      if (!existsSync(fullPath)) {
+      if (!fs.existsSync(fullPath)) {
         throw new Error(`Markdown file not found: ${fullPath}`);
       }
       
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const content = await fs.promises.readFile(fullPath, 'utf-8');
       
       return {
         content,
@@ -1021,11 +1386,11 @@ const config = {
       const competitionPath = path.join(this.options.docsBasePath || '', 'competitions', `${competitionId}.md`);
       
       // Check if file exists
-      if (!existsSync(competitionPath)) {
+      if (!fs.existsSync(competitionPath)) {
         throw new Error(`Competition documentation not found: ${competitionPath}`);
       }
       
-      const content = await fs.readFile(competitionPath, 'utf-8');
+      const content = await fs.promises.readFile(competitionPath, 'utf-8');
       
       return {
         content,
@@ -1047,11 +1412,11 @@ const config = {
       const strategyPath = path.join(this.options.docsBasePath || '', 'strategies', `${strategyType}.md`);
       
       // Check if file exists
-      if (!existsSync(strategyPath)) {
+      if (!fs.existsSync(strategyPath)) {
         throw new Error(`Strategy documentation not found: ${strategyPath}`);
       }
       
-      const content = await fs.readFile(strategyPath, 'utf-8');
+      const content = await fs.promises.readFile(strategyPath, 'utf-8');
       
       return {
         content,
@@ -2712,8 +3077,11 @@ const item: ${exp.name} = {
         }));
       }
     } else if (url.pathname === '/search') {
-      // Simple search across documentation sources
+      // Enhanced search across documentation sources using SQLite and vector search
       const query = url.searchParams.get('query') || '';
+      const limit = parseInt(url.searchParams.get('limit') || '5', 10);
+      const pluginName = url.searchParams.get('plugin') || '';
+      const useVector = url.searchParams.get('vector') !== 'false'; // Default to using vector search
       
       if (!query) {
         res.statusCode = 400;
@@ -2722,18 +3090,168 @@ const item: ${exp.name} = {
       }
       
       try {
-        // This is a very basic implementation - would need a proper search index in production
-        // For now, just search plugin names and descriptions
-        const plugins = await this.pluginRegistry.getPlugins();
-        const results = Object.values(plugins).filter((plugin: any) => 
-          plugin.name.includes(query) || 
-          plugin.description.toLowerCase().includes(query.toLowerCase())
-        );
+        console.log(`📝 SERVER: Processing search request for '${query}'`);
+        
+        // First, try to find documents in our SQLite store
+        let results: Array<{
+          id: string;
+          chunk_id?: string;
+          content: string;
+          title: string;
+          source: string;
+          score: number;
+          relevance: number;
+        }> = [];
+        
+        // If vector search is enabled, use it
+        if (useVector) {
+          console.log(`📝 SERVER: Using vector search for '${query}'`);
+          
+          // Generate embedding for the query
+          const queryEmbedding = await this.textEmbeddings.generateEmbedding(query);
+          
+          // If we have a specific plugin name, filter results after search
+          const vectorResults = this.documentStore.searchByVector(queryEmbedding, limit * 2);
+          
+          // Filter by plugin name if specified
+          const filteredResults = pluginName 
+            ? vectorResults.filter(doc => {
+              // Get the plugin name from the document store
+              const docDetails = this.documentStore.getDocument(doc.document_id);
+              return docDetails?.metadata.plugin_name === pluginName;
+            })
+            : vectorResults;
+          
+          // Map to the expected format
+          results = filteredResults.slice(0, limit).map(doc => ({
+            id: doc.document_id.toString(),
+            chunk_id: doc.chunk_id.toString(),
+            content: doc.content,
+            title: doc.title,
+            source: doc.source,
+            score: doc.similarity,
+            relevance: doc.similarity
+          }));
+          
+          console.log(`📝 SERVER: Vector search found ${results.length} results`);
+        } else {
+          // Fall back to keyword search
+          // If we have a specific plugin name, search only that plugin's docs
+          if (pluginName) {
+            console.log(`📝 SERVER: Searching for '${query}' in plugin '${pluginName}'`);
+            
+            // Get all chunks for this plugin
+            const docIds = this.documentStore.getPluginDocuments(pluginName);
+            
+            if (docIds.length > 0) {
+              // Get the full documents with chunks
+              const pluginDocs = docIds.map(id => this.documentStore.getDocument(id))
+                .filter((doc): doc is { metadata: DocumentMetadata, chunks: string[] } => doc !== null);
+              
+              if (pluginDocs.length > 0) {
+                // Flatten all chunks for vector search
+                const allChunks = pluginDocs.flatMap(doc => doc.chunks);
+                
+                // Use vector search to find the most relevant chunks
+                const vectorResults = await this.textEmbeddings.findSimilarTexts(query, allChunks, limit);
+                
+                // Map back to document format
+                results = vectorResults.map(result => {
+                  // Find which document this chunk belongs to
+                  const chunkIndex = allChunks.indexOf(result.text);
+                  let docIndex = 0;
+                  let chunkOffset = 0;
+                  
+                  for (let i = 0; i < pluginDocs.length; i++) {
+                    if (chunkOffset + pluginDocs[i].chunks.length > chunkIndex) {
+                      docIndex = i;
+                      break;
+                    }
+                    chunkOffset += pluginDocs[i].chunks.length;
+                  }
+                  
+                  const doc = pluginDocs[docIndex];
+                  
+                  return {
+                    id: String(docIds[docIndex]),
+                    chunk_id: String(chunkIndex - chunkOffset),
+                    content: result.text,
+                    title: doc.metadata.title,
+                    source: doc.metadata.source,
+                    score: result.score,
+                    relevance: result.score
+                  };
+                });
+              }
+            }
+          } else {
+            // Search across all documents
+            console.log(`📝 SERVER: Searching for '${query}' across all documents`);
+            
+            // First try keyword search in SQLite
+            const sqliteResults = this.documentStore.searchDocuments(query, limit * 2);
+            
+            if (sqliteResults.length > 0) {
+              // Extract the text content from each result for vector search refinement
+              const chunks = sqliteResults.map(doc => doc.content);
+              
+              // Use vector search to re-rank the results
+              const vectorResults = await this.textEmbeddings.findSimilarTexts(query, chunks, limit);
+              
+              // Map back to document format with scores
+              results = vectorResults.map(result => {
+                const index = chunks.indexOf(result.text);
+                const doc = sqliteResults[index];
+                return {
+                  id: doc.document_id.toString(),
+                  chunk_id: doc.chunk_id.toString(),
+                  content: doc.content,
+                  title: doc.title,
+                  source: doc.source,
+                  score: result.score,
+                  relevance: result.score
+                };
+              });
+            }
+          }
+        }
+        
+        // If we don't have enough results from the document store, fall back to plugin registry search
+        if (results.length < limit) {
+          console.log('📝 SERVER: Not enough results from document store, falling back to plugin registry');
+          
+          // Get plugins that match the query
+          const plugins = await this.pluginRegistry.getPlugins();
+          const pluginResults = Object.values(plugins)
+            .filter((plugin: any) => 
+              plugin.name.includes(query) || 
+              plugin.description.toLowerCase().includes(query.toLowerCase())
+            )
+            .slice(0, limit - results.length)
+            .map((plugin: any) => ({
+              id: `plugin-${plugin.name}`,
+              content: plugin.description,
+              title: plugin.name,
+              source: 'plugin-registry',
+              score: 0.5, // Default score for registry results
+              relevance: 0.5
+            }));
+          
+          // Combine results
+          results = [...results, ...pluginResults];
+        }
+        
+        console.log(`📝 SERVER: Returning ${results.length} search results`);
         
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
-        res.end(JSON.stringify({ results }));
+        res.end(JSON.stringify({ 
+          results,
+          query,
+          total: results.length
+        }));
       } catch (error) {
+        console.error(`📝 SERVER: Search error: ${error instanceof Error ? error.message : String(error)}`);
         res.statusCode = 500;
         res.end(JSON.stringify({ 
           error: `Failed to search: ${error instanceof Error ? error.message : String(error)}` 
@@ -2800,6 +3318,136 @@ const item: ${exp.name} = {
           error: `Failed to scan repository: ${error instanceof Error ? error.message : String(error)}` 
         }));
       }
+    } else if (url.pathname === '/populate-docs' && req.method === 'POST') {
+      // Endpoint to populate the document store with plugin documentation
+      let body = '';
+      
+      req.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', async () => {
+        try {
+          const request = JSON.parse(body);
+          const pluginName = request.plugin;
+          const force = request.force === true;
+          
+          if (!pluginName) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Missing plugin parameter' }));
+            return;
+          }
+          
+          console.log(`📝 SERVER: Populating documentation for plugin '${pluginName}'`);
+          
+          try {
+            // Check if we already have docs for this plugin
+            const existingDocs = this.documentStore.getPluginDocuments(pluginName);
+            
+            if (existingDocs.length > 0 && !force) {
+              console.log(`📝 SERVER: Documentation for '${pluginName}' already exists (${existingDocs.length} documents)`);
+              res.statusCode = 200;
+              res.end(JSON.stringify({ 
+                status: 'skipped',
+                message: `Documentation for '${pluginName}' already exists`,
+                count: existingDocs.length
+              }));
+              return;
+            }
+            
+            // Fetch documentation for the plugin
+            const documentation = await this.getDocumentation({
+              type: DocSourceType.PLUGIN,
+              query: pluginName
+            });
+            
+            if (!documentation || !documentation.content) {
+              throw new Error(`No documentation found for plugin '${pluginName}'`);
+            }
+            
+            // Process and store the documentation
+            const chunks = this.documentChunker.chunkMarkdown(documentation.content);
+            
+            // Create document metadata
+            const metadata: DocumentMetadata = {
+              title: documentation.metadata?.title || pluginName,
+              source: documentation.metadata?.source || 'plugin-docs',
+              url: documentation.metadata?.url || '',
+              timestamp: Date.now(),
+              plugin_name: pluginName,
+              plugin_version: documentation.metadata?.version || '1.0.0',
+              doc_type: 'markdown'
+            };
+            
+            // Store in SQLite
+            const docId = this.documentStore.storeDocument(metadata, chunks);
+            
+            console.log(`📝 SERVER: Stored documentation for '${pluginName}' with ID ${docId} (${chunks.length} chunks)`);
+            
+            // Generate embeddings for each chunk in the background
+            this.generateEmbeddingsForDocument(docId, chunks).catch((err: unknown) => {
+              console.error(`Failed to generate embeddings for document ${docId}: ${err instanceof Error ? err.message : String(err)}`);
+            });
+            
+            res.statusCode = 200;
+            res.end(JSON.stringify({ 
+              status: 'success',
+              message: `Documentation for '${pluginName}' stored successfully`,
+              document_id: docId,
+              chunks: chunks.length
+            }));
+          } catch (docError) {
+            console.error(`📝 SERVER: Error populating documentation: ${docError instanceof Error ? docError.message : String(docError)}`);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ 
+              error: `Failed to populate documentation: ${docError instanceof Error ? docError.message : String(docError)}` 
+            }));
+          }
+        } catch (parseError) {
+          console.error(`📝 SERVER: Error parsing request body: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Invalid JSON in request body' }));
+        }
+      });
+    } else if (url.pathname === '/doc-stats') {
+      // Endpoint to get document statistics
+      try {
+        // Get document counts from the database
+        const stats = {
+          totalDocuments: 0,
+          totalChunks: 0,
+          totalEmbeddings: 0,
+          pluginCounts: {} as Record<string, number>,
+          lastUpdated: new Date().toISOString()
+        };
+        
+        // Get counts from the document store
+        stats.totalDocuments = this.documentStore.getDocumentCount();
+        stats.totalChunks = this.documentStore.getChunkCount();
+        stats.totalEmbeddings = this.documentStore.getEmbeddingCount();
+        
+        // Get plugin document counts
+        const plugins = await this.pluginRegistry.getPlugins();
+        for (const pluginName of Object.keys(plugins)) {
+          const count = this.documentStore.getPluginDocuments(pluginName).length;
+          if (count > 0) {
+            stats.pluginCounts[pluginName] = count;
+          }
+        }
+        
+        // Calculate total documents from plugin counts
+        stats.totalDocuments = Object.values(stats.pluginCounts).reduce((sum, count) => sum + count, 0);
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify(stats));
+      } catch (error) {
+        console.error(`📝 SERVER: Error getting document stats: ${error instanceof Error ? error.message : String(error)}`);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ 
+          error: `Failed to get document stats: ${error instanceof Error ? error.message : String(error)}` 
+        }));
+      }
     } else if (url.pathname === '/health') {
       // Health check endpoint
       res.statusCode = 200;
@@ -2826,6 +3474,39 @@ const item: ${exp.name} = {
       return matches[1];
     }
     return packageName;
+  }
+
+  /**
+   * Generate embeddings for a document's chunks in the background
+   * @param documentId The document ID
+   * @param chunks Array of text chunks
+   */
+  private async generateEmbeddingsForDocument(documentId: number, chunks: string[]): Promise<void> {
+    console.log(`📝 SERVER: Generating embeddings for document ${documentId} (${chunks.length} chunks)`);
+    
+    try {
+      // Process each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        
+        // Generate embedding
+        const embedding = await this.textEmbeddings.generateEmbedding(chunk);
+        
+        // Store in database
+        const embeddingId = this.documentStore.storeEmbedding(documentId, i, embedding);
+        console.log(`Generated and stored embedding ${embeddingId} with ${embedding.size} dimensions`);
+        
+        // Log progress periodically
+        if (i % 10 === 0 || i === chunks.length - 1) {
+          console.log(`📝 SERVER: Generated embeddings for ${i + 1}/${chunks.length} chunks of document ${documentId}`);
+        }
+      }
+      
+      console.log(`📝 SERVER: Completed generating embeddings for document ${documentId}`);
+    } catch (error: unknown) {
+      console.error(`📝 SERVER: Error generating embeddings: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
 } 
 

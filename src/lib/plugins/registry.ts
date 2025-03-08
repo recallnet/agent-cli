@@ -1,8 +1,8 @@
+import * as fs from 'fs';
 import axios from 'axios';
 import chalk from 'chalk';
-import fs from 'fs';
-import path from 'path';
 import { execSync } from 'child_process';
+import { getPluginsJsonPath } from '../utils/config-paths.js';
 
 /**
  * Plugin information interface
@@ -34,7 +34,9 @@ export class PluginRegistry {
                       process.env.ELIZA_PLUGIN_REGISTRY_URL || 
                       process.env.PLUGIN_REGISTRY_URL ||
                       'https://raw.githubusercontent.com/elizaos/registry/main/index.json';
-    this.pluginsJsonPath = path.join(process.cwd(), 'plugins.json');
+    
+    // Use the platform-specific path for plugins.json, not in the current directory
+    this.pluginsJsonPath = getPluginsJsonPath();
     
     // Load plugins from plugins.json if it exists
     if (fs.existsSync(this.pluginsJsonPath)) {
