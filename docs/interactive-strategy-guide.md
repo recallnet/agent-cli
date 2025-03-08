@@ -1,178 +1,193 @@
-# Interactive Strategy Development Guide
+# Interactive Strategy Builder Guide
 
 ## Overview
 
-The Recall CLI includes a powerful interactive strategy development feature that guides you through the process of creating sophisticated trading strategies through a conversational interface. This feature leverages the power of LLMs and the MCP server to provide expert guidance, ask relevant questions, and generate high-quality strategy implementations.
+The Interactive Strategy Builder is a core feature of the Recall CLI that guides users through creating sophisticated trading strategies through a conversation with an LLM. This approach combines the expertise of AI with the user's trading goals to generate effective, customized strategies.
 
 ## Key Features
 
-- **Guided Strategy Creation**: An AI-powered conversation that walks you through the strategy creation process
-- **Expert Recommendations**: Suggestions tailored to your specific trading goals and preferences
-- **Multi-turn Refinement**: A back-and-forth conversation to iteratively improve your strategy
-- **Complete Code Generation**: Automatic generation of implementation code for your strategy
-- **Flexible Output**: Options to save strategies in different formats, including Recall Starter Kit compatibility
+- **Guided Conversation**: An LLM-powered conversation flow that asks targeted questions to understand your trading goals and preferences
+- **Strategy Templates**: Support for various strategy types, including trend-following, mean-reversion, momentum, and more
+- **Code Generation**: Automatic generation of implementation code based on your specifications
+- **Plugin Integration**: Recommends appropriate plugins and integrates them into your strategy
+- **Starter Kit Compatibility**: Creates strategies compatible with the Recall Agent Starter Kit
+- **Documentation Generation**: Produces clear documentation for your strategy's approach and parameters
 
 ## Usage
 
-### Basic Strategy Building
+### Basic Usage
+
+To start building a strategy interactively:
 
 ```bash
-# Build a trading strategy interactively
 recall-cli strategy build
 ```
 
-This command starts the interactive strategy builder, which will guide you through defining your trading strategy step by step.
+This will launch the interactive builder with default settings.
 
 ### Advanced Options
 
 ```bash
-# Specify output directory
+# Build with specific output directory
 recall-cli strategy build --output ./my-strategies
 
-# Include specific plugins
-recall-cli strategy build --plugins crypto-market-data,trading-signals,risk-management
+# Build with specific plugins
+recall-cli strategy build --plugins ccxt,trading-signals
 
-# Create a Starter Kit compatible strategy
+# Build a strategy compatible with the Recall Starter Kit
 recall-cli strategy build --starter-kit
+
+# Build with a specific LLM provider
+recall-cli strategy build --provider anthropic
 ```
 
-### Exporting Strategies
-
-You can also export existing strategies to different formats:
-
-```bash
-# Export to Recall Starter Kit format
-recall-cli strategy export ./strategies/my-strategy.json --format starter-kit
-```
-
-## The Strategy Development Process
-
-The interactive strategy builder follows these steps:
+## The Strategy Building Process
 
 ### 1. Strategy Type Selection
 
-First, you'll be asked to select a basic strategy type:
-- **Momentum**: Strategies that follow market trends
-- **Mean Reversion**: Strategies that capitalize on price returning to average
-- **Arbitrage**: Strategies that exploit price differences across exchanges
-- **Custom**: Define your own strategy from scratch
+The process begins by asking you to select a general strategy type:
+- Trend-following strategies
+- Mean-reversion strategies
+- Momentum strategies
+- Breakout strategies
+- Pattern recognition strategies
+- Volatility-based strategies
+- Custom strategy approach
 
 ### 2. Guided Conversation
 
-Next, the AI will engage you in a conversation to refine your strategy:
-- Each question focuses on a specific aspect of your strategy
-- Context is provided about why each aspect is important
-- Example answers guide your thinking
-- Your responses shape the final strategy
-
-Example conversation topics include:
-- Target markets and trading pairs
-- Specific indicators and parameters
-- Entry and exit conditions
-- Risk management rules
-- Timeframes and execution frequency
+The LLM will engage in a conversation to understand:
+- Your specific trading goals
+- Asset preferences (cryptocurrencies, pairs)
+- Timeframe preferences
+- Risk tolerance
+- Technical indicators you're interested in
+- Any specific market conditions you want to target
 
 ### 3. Strategy Generation
 
-After the conversation, the AI generates a comprehensive strategy that incorporates all the insights from your responses. This includes:
-- Detailed strategy description
-- Specific indicators with parameters
-- Precise entry and exit conditions
-- Risk management rules
-- Appropriate timeframes
+Based on your inputs, the LLM will:
+- Design a strategy that meets your requirements
+- Recommend appropriate indicators and parameters
+- Explain the reasoning behind the strategy
+- Discuss potential strengths and weaknesses
 
 ### 4. Code Generation
 
-The system then generates implementation code for your strategy, tailored to work with the selected plugins. This code includes:
-- Imports and dependencies
-- Strategy configuration
+The system will generate:
+- Implementation code for your strategy
 - Entry and exit logic
-- Signal generation
-- Risk management implementation
+- Signal generation functions
+- Position sizing recommendations
+- Risk management approaches
 
-### 5. Output
+### 5. Integration with Agent Creation
 
-All components of your strategy are saved to the specified directory:
-- **Strategy JSON**: A structured representation of your strategy
-- **Strategy Code**: The implementation code in TypeScript
-- **Session History**: A record of the conversation for future reference
-- **Starter Kit Config**: (Optional) Configuration for the Recall Starter Kit
-
-## Integration with Agent Creation
-
-The strategies generated by the interactive builder can be directly used with the agent creation command:
-
-```bash
-recall-cli agent create --strategy ./strategies/my-strategy.json
-```
-
-This creates an agent that uses your custom-built strategy.
+Once your strategy is generated, you can:
+- Save it to a file for later use
+- Directly integrate it with the agent creation process
+- Modify and refine it further
 
 ## Example: Building a Simple Moving Average Crossover Strategy
 
-Here's an example of how the interactive strategy builder can help you create a moving average crossover strategy:
+Here's an example of building a simple moving average crossover strategy:
 
-1. Select "Momentum" as the strategy type
+1. **Initial Prompt**: "I want to build a strategy for Bitcoin that uses moving average crossovers"
 
-2. Answer questions like:
-   - "Which trading pairs would you like to focus on?"
-   - "What timeframes are you interested in trading on?"
-   - "How would you like to configure your moving averages?"
-   - "What risk management parameters are appropriate for your strategy?"
+2. **LLM Response**: The LLM will ask clarifying questions:
+   - "What timeframe would you like to trade on?"
+   - "Would you prefer traditional SMAs or exponential EMAs?"
+   - "What periods would you like to use for your moving averages?"
+   - "How would you like to handle risk management?"
 
-3. Review the generated strategy:
-   ```json
-   {
-     "name": "Dual Moving Average Crossover",
-     "description": "A momentum strategy that trades based on the crossover of fast and slow moving averages",
-     "indicators": [
-       "Fast EMA (10 periods)",
-       "Slow EMA (50 periods)",
-       "Volume"
-     ],
-     "conditions": [
-       "Enter long when Fast EMA crosses above Slow EMA with above-average volume",
-       "Enter short when Fast EMA crosses below Slow EMA with above-average volume",
-       "Exit long when Fast EMA crosses below Slow EMA",
-       "Exit short when Fast EMA crosses above Slow EMA"
-     ],
-     "timeframes": [
-       "15m",
-       "1h",
-       "4h"
-     ],
-     "riskParameters": {
-       "stopLossPercent": "2%",
-       "takeProfitPercent": "6%",
-       "maxPositionSize": "5%",
-       "maxOpenPositions": "3"
+3. **User Responses**: You provide your preferences through the conversation.
+
+4. **Strategy Summary**: The LLM summarizes the strategy:
+   ```
+   Moving Average Crossover Strategy for BTC/USD
+   - Timeframe: 4-hour candles
+   - Short EMA: 9 periods
+   - Long EMA: 21 periods
+   - Entry: Buy when short EMA crosses above long EMA
+   - Exit: Sell when short EMA crosses below long EMA
+   - Position Sizing: 5% of available capital per trade
+   - Stop Loss: 2% below entry price
+   ```
+
+5. **Code Generation**: The system generates the implementation code:
+   ```javascript
+   // Example code snippet
+   class MovingAverageCrossoverStrategy {
+     constructor(shortPeriod = 9, longPeriod = 21) {
+       this.shortPeriod = shortPeriod;
+       this.longPeriod = longPeriod;
+       this.previousCrossState = null;
+     }
+     
+     async analyze(marketData) {
+       const closes = marketData.map(candle => candle.close);
+       
+       // Calculate EMAs
+       const shortEMA = calculateEMA(closes, this.shortPeriod);
+       const longEMA = calculateEMA(closes, this.longPeriod);
+       
+       // Determine current cross state
+       const currentCrossState = shortEMA[shortEMA.length - 1] > longEMA[longEMA.length - 1];
+       
+       // Generate signals
+       let signal = null;
+       if (this.previousCrossState !== null) {
+         if (!this.previousCrossState && currentCrossState) {
+           signal = 'buy';
+         } else if (this.previousCrossState && !currentCrossState) {
+           signal = 'sell';
+         }
+       }
+       
+       // Update state
+       this.previousCrossState = currentCrossState;
+       
+       return {
+         signal,
+         metadata: {
+           shortEMA: shortEMA[shortEMA.length - 1],
+           longEMA: longEMA[longEMA.length - 1],
+           crossState: currentCrossState
+         }
+       };
      }
    }
    ```
 
-4. Use the generated TypeScript implementation in your agent.
+6. **Integration**: The strategy can then be integrated with your agent.
 
 ## Best Practices
 
-1. **Be Specific**: The more specific you are in your responses, the better the final strategy will be
-2. **Consider Trading Goals**: Keep your overall trading goals in mind when answering questions
-3. **Embrace Iteration**: Don't expect to build the perfect strategy on the first try—use the tool for rapid prototyping
-4. **Review the Code**: Always review the generated code and make any necessary adjustments
-5. **Test Before Deployment**: Thoroughly test your strategy with historical data before deploying it
+- **Be Specific**: The more specific you are about your goals and preferences, the better the generated strategy
+- **Ask Questions**: Feel free to ask the LLM to explain aspects of the strategy you don't understand
+- **Iterate**: Don't be afraid to restart the process if you want to explore different approaches
+- **Review the Code**: Always review the generated code and understand how it works before deploying
+- **Consider Testing**: Before using the strategy with real funds, test it with historical data or in a paper trading environment
 
 ## Limitations
 
-- The LLM may occasionally suggest parameters or approaches that need fine-tuning for specific market conditions
-- Complex multi-asset strategies might need additional customization after generation
-- Extremely specialized strategies might require manual adjustments to the generated code
+- The interactive builder is designed to create initial strategies that may require further refinement
+- Complex strategies may need manual adjustment after generation
+- The quality of the generated strategy depends on the clarity of your inputs
+- Generated strategies should be thoroughly tested before use with real funds
 
-## Advanced Usage: Starter Kit Integration
+## Technical Implementation
 
-When using the `--starter-kit` option, the interactive strategy builder generates configuration files compatible with the Recall Starter Kit. These files include:
+The Interactive Strategy Builder leverages:
+- The MCP server for contextual information about trading strategies and indicators
+- LLM models for conversation and code generation
+- Template-based code generation for consistent output
+- Plugin compatibility validation for recommended plugins
 
-- Strategy configuration
-- Plugin dependencies
-- Execution parameters
-- Environment settings
+## Future Enhancements
 
-This makes it easy to integrate your custom strategies into the broader Recall ecosystem. 
+Planned enhancements for the interactive strategy builder include:
+- Integration with backtesting tools for immediate strategy validation
+- More advanced strategy templates for complex approaches
+- Visual representation of strategy logic and expected behavior
+- Collaborative strategy building with multiple users 

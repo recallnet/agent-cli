@@ -2,110 +2,180 @@
 
 ## Project Description
 
-We are building a fully automated Command Line Interface (CLI) tool for creating and managing crypto trading signal detection agents. This tool leverages the Recall Agent Starter Kit and the Eliza Plugin ecosystem to provide a streamlined experience for users who want to create automated trading agents without deep technical knowledge.
+Recall CLI is a command-line interface tool for creating and managing crypto trading signal detection agents. It leverages the Recall Agent Starter Kit and the Eliza Plugin ecosystem to provide a streamlined experience for users who want to create automated trading agents with minimal setup effort.
 
-## Core Technologies
+## Architecture Overview
 
-- **Recall Agent Starter Kit**: Foundation for agent creation
-- **Eliza Plugin Ecosystem**: Provides extensible functionality for agents
-- **LLM Integration**: OpenAI or Anthropic models for assistance
-- **MCP Server**: Managed Context Provider for enhanced LLM capabilities
-- **Node.js (v22+)**: Runtime environment
-- **TypeScript**: Programming language
-- **pnpm**: Package manager
+The project follows a modular architecture with the following core components:
 
-## Key Features
+```
+recall-cli/
+├── src/                   # Source code
+│   ├── index.ts           # Main entry point
+│   └── lib/               # Core libraries
+│       ├── agent/         # Agent setup and management
+│       ├── cli/           # CLI commands implementation
+│       ├── llm/           # LLM provider integrations
+│       ├── mcp/           # Managed Context Provider
+│       ├── plugins/       # Plugin management
+│       ├── strategy/      # Strategy generation
+│       └── utils/         # Utility functions
+```
 
-1. **LLM Integration & MCP Server**
-   - API key authentication for LLM providers
-   - Dynamic MCP server setup for documentation retrieval
-   - Competition specification support for targeted agent building
+## Key Components
 
-2. **Plugin Metadata System**
-   - Extraction of plugin information from Eliza Plugin Registry
-   - Structured `plugins.json` with installation instructions, methods, and compatibility
-   - Version tracking and update mechanism
+### 1. CLI Framework
 
-3. **Automated Agent Setup**
-   - Clone and initialize Recall Agent Starter Kit
-   - Interactive environment configuration
-   - LLM-assisted plugin selection and installation
-   - Agent character configuration
-   - Strategy implementation with LLM assistance
+- **Command Structure**: Built on Commander.js for robust command-line interface
+- **Interactive Prompts**: Uses Inquirer.js for user-friendly interactive prompts
+- **Progress Indicators**: Visual feedback for long-running operations
+- **Error Handling**: Comprehensive error handling with user-friendly messages
 
-4. **Strategy Refinement & Execution**
-   - Interactive strategy definition
-   - Code generation for agent logic
-   - Optimization suggestions
-   - Execution management and monitoring
+### 2. LLM Integration System
 
-## Project Architecture
+- **Provider Abstraction**: Unified interface for OpenAI and Anthropic models
+- **Credential Management**: Secure storage and management of API keys
+- **Context Management**: Dynamic context creation for improved responses
+- **Prompt Templates**: Structured templates for consistent LLM interactions
 
-The project follows a modular architecture with 7 main modules:
+### 3. Managed Context Provider (MCP)
 
-### Module 0: Initialization & Environment Preparation
-- Repository configuration
-- Development environment setup
-- CLI framework implementation
+- **Documentation Management**: Fetches and indexes plugin documentation
+- **SQLite Storage**: Persistent document storage using SQLite database
+- **Document Chunking**: Breaks documents into manageable pieces for context limits
+- **Search Capabilities**: Provides keyword and plugin-specific search
+- **Documentation Scraping**: Extracts documentation from plugin repositories and websites
 
-### Module 1: LLM Integration System
-- API provider abstraction
-- Secure credential management
-- Structured prompting system
+### 4. Plugin Management System
 
-### Module 2: Managed Context Provider (MCP) Server
-- MCP core architecture
-- Documentation source integration
-- Context optimization engine
+- **Registry Integration**: Connects to Eliza plugin registry
+- **Plugin Discovery**: Lists and searches available plugins
+- **Installation Logic**: Handles plugin installation and dependencies
+- **Version Management**: Manages plugin versions and compatibility
+- **Plugin Documentation**: Fetches and caches plugin documentation
 
-### Module 3: Plugin Management System
-- Plugin registry analysis
-- Plugin capability extraction
-- Plugin dependency management
+### 5. Agent Initialization System
 
-### Module 4: Agent Initialization System
-- Recall Agent Starter Kit integration
-- Environment configuration system
-- Plugin integration automation
+- **Project Setup**: Creates new agent projects with proper structure
+- **Environment Configuration**: Sets up required environment variables
+- **Character Generation**: Creates agent personas based on goals
+- **Strategy Integration**: Implements trading strategies based on user requirements
 
-### Module 5: Agent Strategy Implementation
-- Character configuration system
-- Trading strategy system
-- Code generation pipeline
+### 6. Interactive Strategy Builder
 
-### Module 6: Agent Execution & Monitoring
-- Execution management system
-- Performance analytics system
-- Strategy optimization system
+- **Strategy Types**: Supports various trading strategy patterns
+- **Guided Conversation**: LLM-powered conversation flow for strategy definition
+- **Code Generation**: Creates strategy implementation code
+- **Plugin Recommendations**: Suggests appropriate plugins for strategies
 
-### Module 7: Quality Assurance & Documentation
-- Testing framework
-- Documentation generation
-- Distribution system
+### 7. Agent Execution System (In Progress)
 
-## MVP Priorities
+- **Runtime Environment**: Manages agent execution environment
+- **Signal Processing**: Handles trading signal generation and validation
+- **Performance Monitoring**: Tracks agent performance metrics
+- **Logging**: Comprehensive logging for debugging and analysis
 
-For the Minimum Viable Product, we are prioritizing:
+## Implementation Status
 
-1. Automatic incorporation of 5 key plugins useful for crypto trading agents
-2. Basic CLI functionality for scaffolding an agent environment
-3. LLM integration for assisted agent creation
-4. Essential MCP server functionality to pull relevant documentation
+### Completed Components
 
-## Implementation Plan
+- Basic CLI framework and command structure
+- LLM integration system with OpenAI and Anthropic support
+- Plugin management system with registry integration
+- MCP server with documentation fetching
+- SQLite-based document storage with basic retrieval functionality
+- Agent initialization system with project setup
+- Interactive strategy builder with code generation
 
-1. Set up basic project structure with Node.js and TypeScript
-2. Implement CLI framework using Commander.js
-3. Create LLM integration module
-4. Develop MCP server adapter
-5. Implement plugin management system
-6. Create agent initialization workflows
-7. Add strategy implementation capabilities
-8. Build monitoring and optimization features
-9. Finalize documentation and distribution
+### In Progress Components
 
-## Target Compatibility
+- Vector search capabilities for documentation
+- Agent execution and monitoring system
+- Performance analytics dashboard
+- Competition integration features
 
-- macOS (primary)
-- Linux
-- Windows (optional) 
+### Planned Components
+
+- Backtesting framework
+- Plugin development toolkit
+- Cloud deployment options
+- Community sharing features
+
+## Database Schema
+
+The SQLite database used for document storage has the following schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS documents (
+  id TEXT PRIMARY KEY,
+  plugin_name TEXT,
+  plugin_version TEXT,
+  title TEXT,
+  content TEXT,
+  source_url TEXT,
+  timestamp INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+  id TEXT PRIMARY KEY,
+  document_id TEXT,
+  content TEXT,
+  chunk_index INTEGER,
+  FOREIGN KEY (document_id) REFERENCES documents(id)
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  id TEXT PRIMARY KEY,
+  chunk_id TEXT,
+  embedding BLOB,
+  FOREIGN KEY (chunk_id) REFERENCES chunks(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_plugin ON documents(plugin_name, plugin_version);
+CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_chunk ON embeddings(chunk_id);
+```
+
+## Technical Debt
+
+1. **Error Handling**: Some error handling is inconsistent across components
+2. **Test Coverage**: Integration tests needed for end-to-end workflows
+3. **Documentation**: Some code comments are outdated or missing
+4. **Dependency Management**: Need to update and audit dependencies
+5. **Performance Optimization**: MCP server needs optimization for large documentation sets
+
+## Next Steps
+
+1. Complete the vector search implementation for documentation
+2. Finish agent execution system implementation
+3. Add comprehensive integration tests
+4. Implement performance analytics dashboard
+5. Improve error handling and logging
+6. Update documentation for all components
+
+## Development Roadmap
+
+### Phase 1: Core Infrastructure (Completed)
+- Basic CLI framework
+- LLM integration
+- Plugin management
+- MCP server infrastructure
+- Agent creation basics
+
+### Phase 2: Advanced Features (Current)
+- SQLite document storage
+- Enhanced plugin integration
+- Interactive strategy builder
+- Agent initialization improvements
+
+### Phase 3: Performance & Quality (Next)
+- Vector search implementation
+- Agent execution system
+- Performance monitoring
+- Testing and documentation
+
+### Phase 4: Expansion & Community
+- Backtesting framework
+- Cloud deployment options
+- Plugin development toolkit
+- Community sharing features 
