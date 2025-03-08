@@ -107,11 +107,9 @@ export async function exportStrategy(strategyPath: string, options: any) {
             riskParams: strategy.riskParameters
           }
         },
-        plugins: [
-          'crypto-market-data',
-          'trading-signals',
-          'risk-management'
-        ],
+        // If plugins are provided as command line options, use them
+        // Otherwise, leave empty to be filled by the setup process dynamically
+        plugins: options.plugins ? options.plugins.split(',') : [],
         execution: {
           mode: 'continuous',
           interval: getDefaultIntervalFromTimeframes(strategy.timeframes)

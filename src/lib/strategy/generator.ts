@@ -40,82 +40,82 @@ export enum StrategyType {
  */
 export function getBaseStrategy(type: string, customDescription?: string): StrategyDescription {
   switch (type) {
-    case StrategyType.MOMENTUM:
-      return {
-        name: 'Momentum Strategy',
-        description: 'A strategy that follows the trend, buying when prices are rising and selling when they are falling',
-        indicators: ['Moving Average Convergence Divergence (MACD)', 'Relative Strength Index (RSI)', 'Volume'],
-        conditions: [
-          'Enter long when MACD crosses above signal line',
-          'Enter short when MACD crosses below signal line',
-          'Confirm with RSI above 50 for longs, below 50 for shorts',
-          'Ensure sufficient volume to validate the move'
-        ],
-        timeframes: ['1h', '4h', '1d'],
-        riskParameters: {
-          'stopLossPercent': '2%',
-          'takeProfitPercent': '6%',
-          'maxPositionSize': '5%'
-        }
-      };
+  case StrategyType.MOMENTUM:
+    return {
+      name: 'Momentum Strategy',
+      description: 'A strategy that follows the trend, buying when prices are rising and selling when they are falling',
+      indicators: ['Moving Average Convergence Divergence (MACD)', 'Relative Strength Index (RSI)', 'Volume'],
+      conditions: [
+        'Enter long when MACD crosses above signal line',
+        'Enter short when MACD crosses below signal line',
+        'Confirm with RSI above 50 for longs, below 50 for shorts',
+        'Ensure sufficient volume to validate the move'
+      ],
+      timeframes: ['1h', '4h', '1d'],
+      riskParameters: {
+        'stopLossPercent': '2%',
+        'takeProfitPercent': '6%',
+        'maxPositionSize': '5%'
+      }
+    };
       
-    case StrategyType.MEAN_REVERSION:
-      return {
-        name: 'Mean Reversion Strategy',
-        description: 'A strategy that assumes prices will revert to their historical mean after deviating significantly',
-        indicators: ['Bollinger Bands', 'RSI', 'ATR (Average True Range)'],
-        conditions: [
-          'Enter long when price touches lower Bollinger Band and RSI is below 30',
-          'Enter short when price touches upper Bollinger Band and RSI is above 70',
-          'Set stop loss based on ATR multiple',
-          'Take profit when price reverts to the mean (middle Bollinger Band)'
-        ],
-        timeframes: ['15m', '1h', '4h'],
-        riskParameters: {
-          'stopLossATRMultiple': '3',
-          'maxPositionSize': '3%',
-          'minRewardRiskRatio': '1.5'
-        }
-      };
+  case StrategyType.MEAN_REVERSION:
+    return {
+      name: 'Mean Reversion Strategy',
+      description: 'A strategy that assumes prices will revert to their historical mean after deviating significantly',
+      indicators: ['Bollinger Bands', 'RSI', 'ATR (Average True Range)'],
+      conditions: [
+        'Enter long when price touches lower Bollinger Band and RSI is below 30',
+        'Enter short when price touches upper Bollinger Band and RSI is above 70',
+        'Set stop loss based on ATR multiple',
+        'Take profit when price reverts to the mean (middle Bollinger Band)'
+      ],
+      timeframes: ['15m', '1h', '4h'],
+      riskParameters: {
+        'stopLossATRMultiple': '3',
+        'maxPositionSize': '3%',
+        'minRewardRiskRatio': '1.5'
+      }
+    };
       
-    case StrategyType.ARBITRAGE:
-      return {
-        name: 'Exchange Arbitrage Strategy',
-        description: 'A strategy that exploits price differences between different exchanges',
-        indicators: ['Price difference', 'Trading volume', 'Transaction costs'],
-        conditions: [
-          'Enter when price difference between exchanges exceeds transaction costs',
-          'Consider exchange withdrawal/deposit times',
-          'Validate sufficient liquidity on both exchanges',
-          'Exit when the price gap closes or reaches target'
-        ],
-        timeframes: ['1m', '5m', '15m'],
-        riskParameters: {
-          'minPriceDifferencePercent': '1%',
-          'maxExposure': '10%',
-          'maxPositionDuration': '30m'
-        }
-      };
+  case StrategyType.ARBITRAGE:
+    return {
+      name: 'Exchange Arbitrage Strategy',
+      description: 'A strategy that exploits price differences between different exchanges',
+      indicators: ['Price difference', 'Trading volume', 'Transaction costs'],
+      conditions: [
+        'Enter when price difference between exchanges exceeds transaction costs',
+        'Consider exchange withdrawal/deposit times',
+        'Validate sufficient liquidity on both exchanges',
+        'Exit when the price gap closes or reaches target'
+      ],
+      timeframes: ['1m', '5m', '15m'],
+      riskParameters: {
+        'minPriceDifferencePercent': '1%',
+        'maxExposure': '10%',
+        'maxPositionDuration': '30m'
+      }
+    };
       
-    case StrategyType.CUSTOM:
-      return {
-        name: 'Custom Strategy',
-        description: customDescription || 'A custom trading strategy',
-        indicators: [],
-        conditions: [],
-        timeframes: [],
-        riskParameters: {}
-      };
+  case StrategyType.CUSTOM:
+    return {
+      name: 'Custom Strategy',
+      description: customDescription || 'A custom trading strategy',
+      indicators: [],
+      conditions: [],
+      timeframes: [],
+      riskParameters: {}
+    };
       
-    default:
-      return {
-        name: `${type} Strategy`,
-        description: customDescription || `A trading strategy based on ${type}`,
-        indicators: [],
-        conditions: [],
-        timeframes: [],
-        riskParameters: {}
-      };
+  default:
+    return {
+      name: `${type} Strategy`,
+      description: customDescription || `A trading strategy based on ${type}`,
+      indicators: [],
+      conditions: [],
+      timeframes: [],
+      riskParameters: {}
+    };
   }
 }
 
@@ -201,7 +201,7 @@ export async function generateStrategyImplementation(
   
   if (!provider) {
     console.log(chalk.yellow('No LLM provider configured. Using template strategy implementation.'));
-    return getTemplateImplementation(strategy);
+    return getTemplateImplementation(strategy, plugins);
   }
   
   console.log(chalk.yellow('Using AI to generate strategy code...'));
@@ -236,7 +236,7 @@ Your code should work with the Eliza plugin system and be ready to be placed in 
     };
   } catch (error) {
     console.log(chalk.yellow(`AI code generation failed: ${error instanceof Error ? error.message : String(error)}. Using template implementation.`));
-    return getTemplateImplementation(strategy);
+    return getTemplateImplementation(strategy, plugins);
   }
 }
 
@@ -280,72 +280,56 @@ function extractFunctions(code: string): string[] {
 /**
  * Get a template implementation based on the strategy
  */
-function getTemplateImplementation(strategy: StrategyDescription): StrategyImplementation {
-  const templateCode = `import { MarketData } from '@elizaos-plugins/plugin-crypto-market-data';
-import { SignalGenerator } from '@elizaos-plugins/plugin-trading-signals';
-import { RiskManager } from '@elizaos-plugins/plugin-risk-management';
+function getTemplateImplementation(strategy: StrategyDescription, plugins: string[] = []): StrategyImplementation {
+  // Generate dynamic imports based on the selected plugins
+  const pluginImports = plugins.map(plugin => {
+    // Convert plugin name to a likely class name (camelCase)
+    const className = plugin
+      .split('-')
+      .map((part, i) => i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1))
+      .join('');
+    
+    return `import { ${className.charAt(0).toUpperCase() + className.slice(1)} } from '@elizaos-plugins/${plugin}';`;
+  }).join('\n');
 
-/**
+  // Determine strategy type for component generation
+  let strategyType = StrategyType.CUSTOM;
+  if (strategy.name.toLowerCase().includes('momentum')) {
+    strategyType = StrategyType.MOMENTUM;
+  } else if (strategy.name.toLowerCase().includes('mean') || strategy.name.toLowerCase().includes('reversion')) {
+    strategyType = StrategyType.MEAN_REVERSION;
+  } else if (strategy.name.toLowerCase().includes('arbitrage')) {
+    strategyType = StrategyType.ARBITRAGE;
+  }
+
+  const templateCode = `${pluginImports}${pluginImports ? '\n\n' : ''}/**
  * ${strategy.name}
  * ${strategy.description}
  */
-
-// Configuration
-const config = {
-  timeframes: ${JSON.stringify(strategy.timeframes)},
-  indicators: ${JSON.stringify(strategy.indicators)},
-  riskParameters: ${JSON.stringify(strategy.riskParameters)}
-};
-
-// Market data provider
-const marketData = new MarketData({
-  // Configure based on environment variables
-  apiKey: process.env.API_KEY,
-  apiSecret: process.env.EXCHANGE_API_SECRET
-});
-
-// Signal generator
-const signalGenerator = new SignalGenerator();
-
-// Risk manager
-const riskManager = new RiskManager({
-  // Configure based on risk parameters
-  maxRiskPerTrade: config.riskParameters.maxPositionSize || '5%'
-});
-
-/**
- * Main function to run the strategy
- */
-export async function run() {
-  console.log('Starting ${strategy.name}');
+export async function runStrategy() {
+  // Initialize strategy components
+  console.log('Initializing strategy: ${strategy.name}');
   
-  // Subscribe to market data
-  await marketData.initialize();
-  marketData.subscribeToMarkets(['BTC/USDT', 'ETH/USDT']);
+  // Your strategy implementation goes here
+  // This is a placeholder - it should be customized based on your specific strategy
   
-  // Process market updates
-  marketData.onMarketUpdate((data) => {
-    // Generate signals based on strategy conditions
-    const signals = signalGenerator.generateSignals(data, {
-      // Configure based on strategy conditions
-      indicators: config.indicators,
-      conditions: ${JSON.stringify(strategy.conditions)}
-    });
-    
-    // Apply risk management
-    const trades = riskManager.evaluateSignals(signals);
-    
-    // Log trading opportunities
-    if (trades.length > 0) {
-      console.log('Trading opportunities detected:', trades);
-    }
-  });
+${getStrategyComponentsFromType(strategyType)}
+  
+  console.log('Strategy execution complete');
+  return { success: true };
 }
 
-// Run the strategy
-run().catch(error => {
-  console.error('Strategy execution failed:', error);
-});`;
+/**
+ * Main function - entry point
+ */
+export async function main() {
+  try {
+    console.log('Starting trading strategy');
+    await runStrategy();
+  } catch (error) {
+    console.error('Strategy execution failed:', error);
+  }
+}`;
 
   return {
     code: templateCode,
@@ -418,7 +402,7 @@ Make sure all aspects of your strategy comply with the competition rules and are
       const jsonStr = response.content.substring(jsonStartIdx, jsonEndIdx);
       strategyJson = JSON.parse(jsonStr);
     } catch (jsonError) {
-      console.log(chalk.yellow(`Failed to parse JSON from LLM response. Using fallback method.`));
+      console.log(chalk.yellow('Failed to parse JSON from LLM response. Using fallback method.'));
       
       // Fallback: Try to extract the strategy information using regex
       const nameMatch = /["']name["']\s*:\s*["'](.+?)["']/s.exec(response.content);
@@ -502,5 +486,45 @@ function parseJsonArray(arrayString: string): string[] {
     }
     
     return items;
+  }
+}
+
+/**
+ * Generate strategy component code based on strategy type
+ */
+function getStrategyComponentsFromType(type: StrategyType): string {
+  // Define all strategy components with proper indentation
+  const momentumStrategy = `  // Momentum strategy typically uses trend indicators
+  // Example pseudo-code:
+  // 1. Analyze price momentum using selected indicators
+  // 2. Generate buy signals when momentum is positive
+  // 3. Generate sell signals when momentum weakens`;
+  
+  const meanReversionStrategy = `  // Mean reversion strategy looks for price returning to average
+  // Example pseudo-code:
+  // 1. Calculate moving averages or other reference points
+  // 2. Generate buy signals when price is below average
+  // 3. Generate sell signals when price is above average`;
+  
+  const arbitrageStrategy = `  // Arbitrage strategy looks for price differences across markets
+  // Example pseudo-code:
+  // 1. Compare prices across multiple exchanges
+  // 2. Identify arbitrage opportunities
+  // 3. Execute trades to capture price differences`;
+  
+  const customStrategy = `  // Custom strategy implementation
+  // Implement your custom logic here based on your strategy description`;
+  
+  // Return the appropriate strategy code
+  switch (type) {
+  case StrategyType.MOMENTUM:
+    return momentumStrategy;
+  case StrategyType.MEAN_REVERSION:
+    return meanReversionStrategy;
+  case StrategyType.ARBITRAGE:
+    return arbitrageStrategy;
+  case StrategyType.CUSTOM:
+  default:
+    return customStrategy;
   }
 } 

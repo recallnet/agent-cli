@@ -17,7 +17,10 @@
     "dev": "ts-node --esm src/index.ts",
     "lint": "eslint src/**/*.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:setup": "ts-node --esm scripts/test-setup-workflow.ts",
+    "test:simple": "node scripts/test-setup-simple.js",
+    "test:basic": "node scripts/simple-test.cjs"
   },
   "keywords": [
     "recall",

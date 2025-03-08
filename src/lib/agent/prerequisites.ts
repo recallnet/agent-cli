@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import chalk from 'chalk';
 
 const execAsync = promisify(exec);
 
@@ -131,19 +132,27 @@ export function validateProjectStructure(projectPath: string): {
 } {
   const issues: string[] = [];
   
-  // Expected structure based on Recall Agent Starter Kit
+  // Only require the src directory to exist
   const requiredDirectories = [
-    'src',
+    'src'
+  ];
+  
+  // Only require package.json and a main entry point to exist
+  const requiredFiles = [
+    'package.json',
+    'src/index.ts'
+  ];
+  
+  // These are recommended but not required
+  const recommendedDirectories = [
     'src/actions',
     'src/providers',
     'characters',
     'strategies'
   ];
   
-  const requiredFiles = [
-    'package.json',
+  const recommendedFiles = [
     'tsconfig.json',
-    'src/index.ts',
     'src/types.ts',
     'src/environment.ts'
   ];
@@ -181,6 +190,22 @@ export function validateProjectStructure(projectPath: string): {
       missingFiles.push(file);
     }
   }
+  
+  // Check for recommended directories and add as suggestions but don't fail validation
+  for (const dir of recommendedDirectories) {
+    const dirPath = path.join(projectPath, dir);
+    if (!fs.existsSync(dirPath)) {
+      missingDirectories.push(dir);
+    }
+  }
+  
+  // Check for recommended files and add as suggestions but don't fail validation
+  for (const file of recommendedFiles) {
+    const filePath = path.join(projectPath, file);
+    if (!fs.existsSync(filePath)) {
+      missingFiles.push(file);
+    }
+  }
 
   // Validate package.json if it exists
   const packageJsonPath = path.join(projectPath, 'package.json');
@@ -197,15 +222,15 @@ export function validateProjectStructure(projectPath: string): {
         issues.push('package.json is missing "version" property');
       }
       
-      if (!packageJson.dependencies) {
-        issues.push('package.json is missing "dependencies" section');
-      } else {
-        // Check for essential dependencies
-        const essentialDeps = ['@elizaos/core', '@elizaos/agent'];
-        for (const dep of essentialDeps) {
-          if (!packageJson.dependencies[dep]) {
-            issues.push(`package.json is missing dependency "${dep}"`);
-          }
+      // Make dependencies check optional - don't fail if they don't exist
+      if (packageJson.dependencies) {
+        // Look for common agent libraries but don't require them
+        const recommendedDeps = ['@elizaos/core', '@elizaos/agent'];
+        const missingDeps = recommendedDeps.filter(dep => !packageJson.dependencies[dep]);
+        
+        if (missingDeps.length > 0) {
+          // Just log this as an informational message, not an error
+          console.log(chalk.yellow(`Note: package.json is missing recommended dependencies: ${missingDeps.join(', ')}`));
         }
       }
     } catch (error) {
@@ -213,7 +238,9 @@ export function validateProjectStructure(projectPath: string): {
     }
   }
 
-  const valid = issues.length === 0;
+  // Only fail validation if the minimal required structure is missing
+  const valid = missingDirectories.filter(dir => requiredDirectories.includes(dir)).length === 0 && 
+                missingFiles.filter(file => requiredFiles.includes(file)).length === 0;
   
   return { 
     valid, 

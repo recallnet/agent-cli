@@ -82,8 +82,8 @@ export async function createAgent(options: any) {
         for (const plugin of pluginRecommendations) {
           const confidenceColor = 
             plugin.confidence > 0.8 ? chalk.green :
-            plugin.confidence > 0.5 ? chalk.yellow :
-            chalk.red;
+              plugin.confidence > 0.5 ? chalk.yellow :
+                chalk.red;
             
           console.log(chalk.bold(`- ${plugin.name}`) + confidenceColor(` (Confidence: ${Math.round(plugin.confidence * 100)}%)`));
         }
@@ -133,7 +133,41 @@ export async function createAgent(options: any) {
           competitionStrategy: competitionInfo.strategy
         };
       } else {
-        // Fall back to normal flow but prefill with competition data
+        // First fetch available plugins
+        let pluginChoices: {name: string; value: string; checked: boolean}[] = [];
+        try {
+          // This is synchronous but requires plugins.json to exist
+          const pluginRegistry = new PluginRegistry(); 
+          const availablePlugins = await pluginRegistry.getPlugins();
+          
+          pluginChoices = Object.values(availablePlugins).map(plugin => {
+            // Ensure correct namespace
+            let normalizedName = plugin.name;
+            
+            // If name already includes @elizaos-plugins/, replace with @elizaos/
+            if (normalizedName.startsWith('@elizaos-plugins/')) {
+              normalizedName = normalizedName.replace('@elizaos-plugins/', '@elizaos/');
+            }
+            // If name doesn't have a namespace, add @elizaos/ namespace
+            else if (!normalizedName.startsWith('@')) {
+              normalizedName = normalizedName.startsWith('plugin-') 
+                ? `@elizaos/${normalizedName}` 
+                : `@elizaos/plugin-${normalizedName}`;
+            }
+            
+            return {
+              name: `${plugin.name} - ${plugin.description.substring(0, 60)}${plugin.description.length > 60 ? '...' : ''}`,
+              value: normalizedName,
+              checked: false  // Default to unchecked, user will select what they need
+            };
+          });
+        } catch (error) {
+          console.warn(`Failed to fetch plugins from registry: ${error instanceof Error ? error.message : String(error)}`);
+          // If we can't load plugins, provide an empty list
+          pluginChoices = [];
+        }
+
+        // Use the fetched plugins in the prompt
         const strategyAnswers = await inquirer.prompt([
           {
             type: 'list',
@@ -158,13 +192,7 @@ export async function createAgent(options: any) {
             type: 'checkbox',
             name: 'plugins',
             message: 'Select required plugins:',
-            choices: [
-              { name: 'crypto-market-data - Fetch market data', value: 'crypto-market-data', checked: competitionInfo.recommendedPlugins.includes('crypto-market-data') },
-              { name: 'trading-signals - Generate signals', value: 'trading-signals', checked: competitionInfo.recommendedPlugins.includes('trading-signals') },
-              { name: 'risk-management - Manage risk', value: 'risk-management', checked: competitionInfo.recommendedPlugins.includes('risk-management') },
-              { name: 'exchange-connector - Connect to exchanges', value: 'exchange-connector', checked: competitionInfo.recommendedPlugins.includes('exchange-connector') },
-              { name: 'strategy-backtest - Backtest strategies', value: 'strategy-backtest', checked: competitionInfo.recommendedPlugins.includes('strategy-backtest') }
-            ]
+            choices: pluginChoices
           },
           {
             type: 'confirm',
@@ -183,6 +211,42 @@ export async function createAgent(options: any) {
       }
     } else {
       // Standard flow without competition data
+      
+      // Try to get available plugins
+      let pluginChoices: {name: string; value: string; checked: boolean}[] = [];
+      try {
+        // This is synchronous but requires plugins.json to exist
+        const pluginRegistry = new PluginRegistry(); 
+        const availablePlugins = await pluginRegistry.getPlugins();
+        
+        pluginChoices = Object.values(availablePlugins).map(plugin => {
+          // Ensure correct namespace
+          let normalizedName = plugin.name;
+          
+          // If name already includes @elizaos-plugins/, replace with @elizaos/
+          if (normalizedName.startsWith('@elizaos-plugins/')) {
+            normalizedName = normalizedName.replace('@elizaos-plugins/', '@elizaos/');
+          }
+          // If name doesn't have a namespace, add @elizaos/ namespace
+          else if (!normalizedName.startsWith('@')) {
+            normalizedName = normalizedName.startsWith('plugin-') 
+              ? `@elizaos/${normalizedName}` 
+              : `@elizaos/plugin-${normalizedName}`;
+          }
+          
+          return {
+            name: `${plugin.name} - ${plugin.description.substring(0, 60)}${plugin.description.length > 60 ? '...' : ''}`,
+            value: normalizedName,
+            checked: false  // Default to unchecked, user will select what they need
+          };
+        });
+      } catch (error) {
+        console.warn(`Failed to fetch plugins from registry: ${error instanceof Error ? error.message : String(error)}`);
+        // If we can't load plugins, provide an empty list
+        pluginChoices = [];
+      }
+      
+      // Use the fetched plugins in the prompt
       const standardAnswers = await inquirer.prompt([
         {
           type: 'list',
@@ -206,13 +270,7 @@ export async function createAgent(options: any) {
           type: 'checkbox',
           name: 'plugins',
           message: 'Select required plugins:',
-          choices: [
-            { name: 'crypto-market-data - Fetch market data', value: 'crypto-market-data', checked: true },
-            { name: 'trading-signals - Generate signals', value: 'trading-signals', checked: true },
-            { name: 'risk-management - Manage risk', value: 'risk-management', checked: true },
-            { name: 'exchange-connector - Connect to exchanges', value: 'exchange-connector' },
-            { name: 'strategy-backtest - Backtest strategies', value: 'strategy-backtest' }
-          ]
+          choices: pluginChoices
         },
         {
           type: 'confirm',
@@ -302,7 +360,7 @@ export async function createAgent(options: any) {
     spinner.text = 'Installing selected plugins';
     for (const plugin of answers.plugins) {
       try {
-        await registry.installPlugin(plugin);
+        await registry.installPlugin(plugin, undefined, answers.name);
       } catch (error) {
         spinner.warn(`Failed to install plugin ${plugin}: ${error instanceof Error ? error.message : String(error)}`);
       }

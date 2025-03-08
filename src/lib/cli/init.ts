@@ -35,7 +35,7 @@ export async function initializeProject(name: string, options: { force?: boolean
     
     // Clone starter kit with simple-git
     const git = simpleGit.simpleGit();
-    await git.clone('https://github.com/eliza-ai/recall-agent-starter-kit.git', projectDir, ['--depth', '1']);
+    await git.clone('https://github.com/recallnet/recall-agent-starter', projectDir, ['--depth', '1']);
     
     // Remove .git directory
     fs.rmSync(path.join(projectDir, '.git'), { recursive: true, force: true });

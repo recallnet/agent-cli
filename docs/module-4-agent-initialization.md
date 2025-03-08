@@ -4,22 +4,28 @@ This module provides comprehensive functionality for initializing and setting up
 
 ## Core Components
 
-### 1. Agent Setup Command
+### 1. Unified Setup Workflow
+- All-in-one `start` command that handles the complete workflow
+- Guides users through LLM configuration, project initialization, and setup
+- Supports both new projects and existing directories
+- Streamlined user experience with fewer commands
+
+### 2. Agent Setup Command
 - CLI command (`setup`) that initiates the interactive project setup process
 - Allows users to set up an existing project directory with proper configuration
 
-### 2. Prerequisites Validation
+### 3. Prerequisites Validation
 - System prerequisite checking (Node.js version, pnpm, git)
 - Project structure validation with detailed issue reporting
 - Project initialization capability checking
 
-### 3. Plugin Compatibility Management
+### 4. Plugin Compatibility Management
 - Plugin compatibility checking against installed plugins
 - Conflict detection and recommendation generation
 - Plugin installation with proper versioning
 - Project structure updating for installed plugins
 
-### 4. Environment Variable Management
+### 5. Environment Variable Management
 - Analysis of required environment variables based on installed plugins
 - Detection of available environment variables from various sources
 - Environment file generation and validation
@@ -27,9 +33,43 @@ This module provides comprehensive functionality for initializing and setting up
 
 ## Usage
 
-The Agent Initialization System can be used via the setup command:
+### All-in-One Workflow (Recommended)
+
+The easiest way to get started is with our all-in-one setup command:
 
 ```bash
+recall-cli start my-trading-agent
+```
+
+This single command will:
+1. Guide you through LLM provider configuration
+2. Initialize a new project
+3. Launch the interactive setup assistant
+4. Help you define your trading strategy
+5. Install appropriate plugins
+6. Configure your agent's character and environment
+
+For an existing directory:
+
+```bash
+cd existing-project
+recall-cli start
+```
+
+### Alternative: Step-by-Step Setup
+
+If you prefer to go through each step separately:
+
+1. Initialize a project:
+
+```bash
+recall-cli init my-trading-agent
+```
+
+2. Run the setup assistant:
+
+```bash
+cd my-trading-agent
 recall-cli setup
 ```
 

@@ -146,9 +146,18 @@ export async function installPlugin(
   const spinner = ora(`Installing plugin ${pluginName}...`).start();
   
   try {
+    // Format the plugin name with correct namespace if needed
+    const formattedPluginName = pluginName.startsWith('@') 
+      ? pluginName 
+      : pluginName.startsWith('plugin-')
+        ? `@elizaos/${pluginName}`
+        : `@elizaos/plugin-${pluginName}`;
+    
     // Construct install command
     const versionStr = version ? `@${version}` : '';
-    const command = `cd "${projectPath}" && pnpm add ${pluginName}${versionStr}`;
+    const command = `cd "${projectPath}" && pnpm add ${formattedPluginName}${versionStr}`;
+    
+    console.log(`Executing command: ${command}`);
     
     // Execute install command
     const { stdout, stderr } = await execAsync(command);
@@ -176,13 +185,13 @@ export async function installPlugin(
           ...packageJson.devDependencies
         };
         
-        installedVersion = dependencies[pluginName];
+        installedVersion = dependencies[formattedPluginName];
       } catch (error) {
         // Ignore errors in package.json parsing
       }
     }
     
-    spinner.succeed(`Successfully installed ${pluginName}${installedVersion ? ` (${installedVersion})` : ''}`);
+    spinner.succeed(`Successfully installed ${formattedPluginName}${installedVersion ? ` (${installedVersion})` : ''}`);
     
     return {
       success: true,
@@ -202,6 +211,32 @@ export async function installPlugin(
 }
 
 /**
+ * Analyze package.json to find Eliza plugins
+ */
+export function analyzePackageJson(packagePath: string): Record<string, string> {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+    const dependencies = {
+      ...packageJson.dependencies || {},
+      ...packageJson.devDependencies || {}
+    };
+    
+    // Filter for Eliza plugins
+    const elizaPlugins = Object.keys(dependencies).filter(dep => 
+      dep.startsWith('@elizaos/') || dep.includes('elizaos')
+    );
+    
+    // Create a map of plugin name to version
+    return elizaPlugins.reduce((acc: Record<string, string>, dep: string) => {
+      acc[dep] = dependencies[dep];
+      return acc;
+    }, {});
+  } catch (error) {
+    return {};
+  }
+}
+
+/**
  * Get installed plugins in a project
  */
 export async function getInstalledPlugins(projectPath: string): Promise<PluginInfo[]> {
@@ -212,24 +247,17 @@ export async function getInstalledPlugins(projectPath: string): Promise<PluginIn
   }
   
   try {
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-    const dependencies = {
-      ...packageJson.dependencies,
-      ...packageJson.devDependencies
-    };
-    
-    // Filter for Eliza plugins
-    const elizaPlugins = Object.keys(dependencies).filter(dep => 
-      dep.startsWith('@elizaos-plugins/') || dep.includes('elizaos')
-    );
+    // Use the analyzePackageJson function to get installed plugins
+    const pluginDependencies = analyzePackageJson(packageJsonPath);
+    const elizaPlugins = Object.keys(pluginDependencies);
     
     // Create basic plugin info
     return elizaPlugins.map(name => ({
       name,
-      version: dependencies[name],
+      version: pluginDependencies[name],
       description: '',
       dependencies: [],
-      installCommand: `pnpm add ${name}@${dependencies[name]}`,
+      installCommand: `pnpm add ${name}@${pluginDependencies[name]}`,
       capabilities: []
     }));
   } catch (error) {
@@ -268,7 +296,7 @@ export function updateProjectStructure(
       let configStatements = '';
       
       for (const plugin of installedPlugins) {
-        const pluginName = plugin.name.replace('@elizaos-plugins/', '');
+        const pluginName = plugin.name.replace('@elizaos/', '');
         const variableName = `${pluginName}Config`;
         
         importStatements += `import { config as ${variableName} } from '${plugin.name}';\n`;
@@ -303,7 +331,7 @@ export function updateProjectStructure(
       let registerStatements = '';
       
       for (const plugin of installedPlugins) {
-        const pluginName = plugin.name.replace('@elizaos-plugins/', '');
+        const pluginName = plugin.name.replace('@elizaos/', '');
         const variableName = `${pluginName}Plugin`;
         
         importStatements += `import { plugin as ${variableName} } from '${plugin.name}';\n`;

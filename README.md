@@ -1,298 +1,210 @@
 # Recall CLI
 
-A command-line tool for creating and managing crypto trading signal detection agents using the Recall Agent Starter Kit and the Eliza Plugin ecosystem.
+A fully automated Command Line Interface (CLI) tool for creating and managing crypto trading signal detection agents. This tool leverages the Recall Agent Starter Kit and the Eliza Plugin ecosystem to provide a streamlined experience for users who want to create automated trading agents.
 
 ## Features
 
-- 🚀 **Quick Setup**: Initialize trading agent projects with a single command
-- 🔌 **Plugin Management**: Easily discover, install, and manage Eliza plugins for crypto trading
-- 🧠 **LLM Integration**: Leverage OpenAI or Anthropic models for strategy refinement
-- 🤝 **Smart Recommendations**: Get AI-powered plugin recommendations based on your strategy
-- 📚 **Documentation Context**: Access contextual documentation via the MCP server
-- 📝 **Code Understanding**: Explore plugin codebases and get integration guidance
-- 🤖 **Agent Creation**: Interactive agent configuration with LLM-assisted strategy implementation
-- 📊 **Monitoring**: Track and visualize agent performance
-- 🔍 **Strategy-Aware Plugin Selection**: Automatically recommend and select plugins based on your trading strategy
+- **All-in-One Setup Workflow**: Single command to handle everything from LLM configuration to agent setup
+- **Interactive Agent Setup**: Guided workflow for setting up crypto trading agents
+- **LLM Integration**: OpenAI and Anthropic support for intelligent assistance
+- **Managed Context Provider (MCP)**: Dynamic documentation fetching for enhanced LLM capabilities
+- **Plugin Management**: Discover, recommend, and install plugins based on your strategy
+- **Strategy Builder**: Create and refine trading strategies with LLM guidance
+- **Environment Configuration**: Automatically set up and validate your environment
 
-## Implementation Status
-
-- ✅ Complete LLM integration with both OpenAI and Anthropic
-- ✅ Complete Plugin Management System with dependency resolution
-- ✅ Basic CLI framework
-- ✅ Character and strategy generators with LLM assistance
-- ✅ Agent creation and execution commands
-- ✅ MCP server for documentation retrieval
-- ✅ LLM-assisted plugin recommendations
-- ✅ Code exploration and understanding
-- ⏳ Agent Strategy Optimization (TODO)
-- ⏳ Testing and distribution (TODO)
-
-## Installation
-
-### Prerequisites
+## Prerequisites
 
 - Node.js v22+
 - pnpm package manager
+- Git
 
-### Install from NPM
-
-```bash
-npm install -g recall-cli
-```
-
-### Install from Source
+## Installation
 
 ```bash
-# Clone this repository
+# Clone the repository
 git clone https://github.com/yourusername/recall-cli.git
-
-# Navigate to the project directory
 cd recall-cli
 
 # Install dependencies
-npm install
+pnpm install
 
-# Build the project
-npm run build
+# Build the CLI
+pnpm build
 
-# Link for local development
-npm link
+# Create a symlink to use the CLI globally
+pnpm link --global
 ```
 
-## Usage
+## Getting Started
 
-### Initialize a New Project
+### Unified Setup Workflow (Recommended)
+
+The easiest way to get started is with our all-in-one setup command:
 
 ```bash
-recall-cli init my-trading-agent
+recall-cli start my-trading-agent
 ```
 
-This command creates a new project directory and sets up the Recall Agent Starter Kit.
+This single command will:
+1. Guide you through LLM provider configuration (OpenAI or Anthropic)
+2. Initialize a new project with the Recall Agent Starter Kit
+3. Launch the interactive setup assistant
+4. Help you define your trading strategy
+5. Recommend and install appropriate plugins
+6. Configure your agent's character and environment
 
-### Configure LLM Provider
+If you want to set up an agent in an existing directory, just run:
 
 ```bash
-recall-cli llm set-key
+cd existing-project
+recall-cli start
 ```
 
-Follow the interactive prompts to set up your OpenAI or Anthropic API key.
+### Alternative: Step-by-Step Setup
 
-You can also directly specify your preferred provider:
+If you prefer to go through the steps individually:
+
+#### 1. Configure LLM Provider
+
+First, configure your preferred LLM provider:
 
 ```bash
-recall-cli llm set-key openai
-# or
-recall-cli llm set-key anthropic
+recall-cli llm config --provider openai --api-key your-api-key
 ```
 
-### Test LLM Connection
+Or:
 
 ```bash
-recall-cli llm test
+recall-cli llm config --provider anthropic --api-key your-api-key
 ```
 
-Test your configured LLM provider with a simple prompt.
+#### 2. Initialize a New Project
 
-### Generate Code with LLM
+Create a new agent project:
 
 ```bash
-recall-cli llm generate-code "A function that fetches cryptocurrency prices"
+recall-cli init my-crypto-agent
 ```
 
-Generate code snippets using the configured LLM.
+#### 3. Run Interactive Setup
+
+Then run the setup assistant:
+
+```bash
+cd my-crypto-agent
+recall-cli setup
+```
 
 ### Plugin Management
 
-Explore available plugins:
+List available plugins:
 
 ```bash
 recall-cli plugin list
 ```
 
-Filter plugins by category:
+Get recommendations based on strategy:
 
 ```bash
-recall-cli plugin list --category trading
-```
-
-View detailed plugin information:
-
-```bash
-recall-cli plugin info crypto-market-data
-```
-
-Install a plugin:
-
-```bash
-recall-cli plugin install crypto-market-data
-```
-
-Visualize plugin dependencies:
-
-```bash
-recall-cli plugin deps crypto-market-data
-```
-
-Update all installed plugins:
-
-```bash
-recall-cli plugin update
-```
-
-### Get AI-Powered Plugin Recommendations
-
-Get plugin recommendations based on your trading strategy:
-
-```bash
-# Interactive mode - describe your strategy in an editor
 recall-cli plugin recommend --interactive
-
-# From a strategy file
-recall-cli plugin recommend --strategy path/to/strategy.md
-
-# Based on competition guidelines
-recall-cli plugin recommend --competition crypto-volatility
 ```
 
-This feature uses the LLM to analyze your strategy and recommend appropriate plugins, including detailed reasoning for each recommendation.
+### Strategy Building
 
-### Plugin Implementation Understanding
-
-Get detailed guidance on how to implement and integrate a plugin:
-
-```bash
-recall-cli plugin understand crypto-market-data
-```
-
-This provides:
-- Explanation of what the plugin does and its main features
-- Core classes/functions and their purposes
-- Step-by-step integration instructions
-- Implementation examples and best practices
-
-### Plugin Usage Examples
-
-Generate practical usage examples for a plugin:
-
-```bash
-recall-cli plugin examples exchange-connector
-```
-
-This provides:
-- Simple standalone examples
-- Integration examples with other plugins
-- Complete agent implementation examples
-- Error handling patterns
-- Usage patterns for different scenarios
-
-### Analyze and Improve Plugin-Related Code
-
-Get insights and improvement suggestions for your code:
-
-```bash
-# From a file
-recall-cli plugin analyze-code --file path/to/code.ts
-
-# Interactive mode
-recall-cli plugin analyze-code --interactive
-
-# Specify language
-recall-cli plugin analyze-code --file path/to/code.py --language python
-```
-
-This provides:
-- Code explanation
-- Potential issues and edge cases
-- Improvement suggestions
-- Best practices
-- Enhanced code versions
-
-### Managed Context Provider (MCP) Server
-
-The MCP server provides documentation and context to the LLM:
-
-```bash
-# Start the MCP server
-recall-cli mcp --start
-
-# Start on a specific port
-recall-cli mcp --start --port 4444
-
-# Stop the MCP server
-recall-cli mcp --stop
-```
-
-The MCP server automatically starts when needed for features that use it, such as plugin recommendations.
-
-### Create an Agent
-
-```bash
-recall-cli agent create
-```
-
-Follow the interactive prompts to configure your trading agent strategy.
-
-### Run an Agent
-
-```bash
-recall-cli agent run
-```
-
-Start your trading agent to begin monitoring market conditions and detecting trading signals.
-
-### Build a Trading Strategy
-
-Create a trading strategy with AI assistance:
+Build a trading strategy interactively:
 
 ```bash
 recall-cli strategy build
 ```
 
-This interactive process:
-1. Guides you through strategy development with targeted questions
-2. Uses the LLM to refine and optimize your strategy
-3. Automatically recommends plugins based on your strategy's requirements
-4. Generates implementation code using the selected plugins
-5. Creates all necessary strategy files
-
-You can also specify plugins manually if preferred:
+## End-to-End Example
 
 ```bash
-recall-cli strategy build --plugins crypto-market-data,trading-signals,risk-management
+# All-in-one setup workflow (recommended)
+recall-cli start btc-momentum-agent
+
+# Follow the interactive prompts to:
+# 1. Configure your LLM provider (OpenAI or Anthropic)
+# 2. Define your trading goals (e.g., "I want to build a momentum strategy for Bitcoin")
+# 3. Select recommended plugins
+# 4. Configure your agent character
+# 5. Set up environment variables
+
+# Move to the created project
+cd btc-momentum-agent
+
+# Install dependencies
+pnpm install
+
+# Start your agent
+pnpm start
 ```
 
-Export a strategy to Starter Kit format:
+## Development
+
+### Project Structure
+
+```
+recall-cli/
+├── src/                 # Source code
+│   ├── index.ts         # CLI entry point
+│   └── lib/             # Core modules
+│       ├── agent/       # Agent setup and management
+│       ├── cli/         # CLI commands
+│       ├── llm/         # LLM provider integrations
+│       ├── mcp/         # Managed Context Provider
+│       ├── plugins/     # Plugin management
+│       ├── strategy/    # Strategy implementation
+│       └── utils/       # Utility functions
+├── scripts/             # Development scripts
+├── dist/                # Compiled output
+├── docs/                # Documentation
+├── test/                # Unit tests
+└── tests/               # Integration tests
+```
+
+### Running Tests
 
 ```bash
-recall-cli strategy export path/to/strategy.json
+# Run unit tests
+pnpm test
+
+# Run integration tests
+pnpm test:integration
+
+# Test the setup workflow
+pnpm test:setup
 ```
 
-## Next Steps
+## Recent Improvements
 
-1. **Enhance Agent Initialization**: Improve integration with actual Recall Agent Starter Kit
-2. **Competition Analysis**: Add capability to analyze competition requirements automatically
-3. **Agent Execution & Monitoring**: Add performance metrics and visualization
-4. **Testing Framework**: Add comprehensive tests for all components
-5. **Documentation Improvement**: Add more detailed docs for each command and feature
+### 1. All-in-One Setup Workflow
 
-## Plugin Ecosystem
+We've added a new unified setup workflow with a single command:
+- Configure LLM provider and project setup in one flow
+- Streamlined user experience with fewer commands
+- Improved guidance throughout the entire process
+- Support for both new projects and existing directories
 
-Recall CLI integrates with the Eliza Plugin ecosystem to provide powerful capabilities for crypto trading agents:
+### 2. Enhanced Plugin Integration
 
-- **crypto-market-data**: Real-time cryptocurrency market data
-- **trading-signals**: Generate trading signals based on market conditions
-- **risk-management**: Trading risk and position sizing management
-- **exchange-connector**: Connect to various cryptocurrency exchanges
-- **strategy-backtest**: Backtest strategies with historical data
+We've improved the plugin integration system to:
+- Automatically resolve plugin dependencies
+- Generate intelligent plugin configurations using LLM
+- Update project imports and configuration automatically
+- Provide better error handling and recovery
 
-## Documentation
+### 3. Improved Agent Setup Workflow
 
-For detailed documentation, see the [docs](./docs) directory:
+The agent setup workflow now:
+- Provides a more interactive and user-friendly experience
+- Offers better recommendations based on trading goals
+- Handles environment configuration more robustly
+- Integrates seamlessly with the plugin system
 
-- [Project Overview](./docs/project-overview.md)
-- [Development Plan](./docs/dev-plan.md)
-- [Instructions](./docs/instructions.md)
-- [Implementation Summary](./docs/implementation-summary.md)
+### 4. End-to-End Testing
+
+Added comprehensive testing for the entire setup workflow to ensure reliability.
 
 ## License
 

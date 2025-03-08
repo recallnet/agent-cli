@@ -97,7 +97,8 @@ export async function installPlugin(pluginName: string, options: any) {
     }
     
     // Install the plugin
-    const success = await registry.installPlugin(pluginName, options.version);
+    const projectDir = process.cwd();
+    const success = await registry.installPlugin(pluginName, options.version, projectDir);
     
     if (success) {
       spinner.succeed(`Successfully installed plugin ${chalk.green(pluginName)}`);
@@ -204,8 +205,8 @@ export async function updatePlugins() {
     
     // Find Eliza plugins
     const elizaPlugins = Object.keys(dependencies)
-      .filter(dep => dep.startsWith('@elizaos-plugins/plugin-'))
-      .map(dep => dep.replace('@elizaos-plugins/plugin-', ''));
+      .filter(dep => dep.startsWith('@elizaos/plugin-'))
+      .map(dep => dep.replace('@elizaos/plugin-', ''));
     
     if (elizaPlugins.length === 0) {
       spinner.info('No Eliza plugins found in this project.');
@@ -226,7 +227,7 @@ export async function updatePlugins() {
           continue;
         }
         
-        const installedVersion = dependencies[`@elizaos-plugins/plugin-${pluginName}`].replace('^', '');
+        const installedVersion = dependencies[`@elizaos/plugin-${pluginName}`].replace('^', '');
         const latestVersion = plugin.version;
         
         if (installedVersion !== latestVersion) {
@@ -402,9 +403,9 @@ Describe your strategy here. Include:
           for (const rec of recommendations) {
             const confidenceColor = 
               rec.confidence > 0.8 ? chalk.green :
-              rec.confidence > 0.5 ? chalk.yellow :
-              chalk.red;
-              
+                rec.confidence > 0.5 ? chalk.yellow :
+                  chalk.red;
+                
             console.log(chalk.bold(`\n${rec.name}`) + confidenceColor(` (Confidence: ${Math.round(rec.confidence * 100)}%)`));
             console.log(chalk.white(rec.reasoning));
             console.log(chalk.dim(`\nInstall with: ${chalk.white(`recall-cli plugin install ${rec.name}`)}`));
@@ -425,13 +426,23 @@ Describe your strategy here. Include:
   pluginCommand.command('understand')
     .description('Understand a plugin\'s implementation and get integration guidance')
     .argument('<plugin>', 'Plugin name')
-    .action(async (pluginName) => {
+    .option('--no-mcp', 'Skip starting the MCP server (use if already running)')
+    .action(async (pluginName, options) => {
+      // Initialize mcpServer as null
+      let mcpServer: McpServer | null = null;
+      const spinner = ora('Processing...').start();
+      
       try {
-        // Start MCP server if not running
-        const mcpServer = new McpServer();
-        const spinner = ora('Starting MCP server...').start();
-        await mcpServer.start();
-        spinner.succeed('MCP server started');
+        // Start MCP server if not running and not skipped
+        if (options.mcp !== false) {
+          mcpServer = new McpServer();
+          spinner.text = 'Starting MCP server...';
+          await mcpServer.start();
+          spinner.succeed('MCP server started');
+          spinner.start('Processing...');
+        } else {
+          console.log(chalk.yellow('Skipping MCP server start (using existing server)'));
+        }
         
         // Create MCP client
         const mcpClient = new McpClient();
@@ -441,7 +452,7 @@ Describe your strategy here. Include:
         
         if (!llmProvider) {
           console.error(chalk.red('No LLM provider configured. Please run `recall-cli llm setup` first.'));
-          await mcpServer.stop();
+          if (mcpServer) await mcpServer.stop();
           return;
         }
         
@@ -449,21 +460,28 @@ Describe your strategy here. Include:
         spinner.start(`Analyzing ${pluginName} implementation...`);
         
         try {
-          const implementationAnalysis = await llmProvider.explainPluginImplementation(pluginName);
+          const explanation = await llmProvider.explainPluginImplementation(pluginName);
           spinner.succeed(`Analysis of ${pluginName} complete`);
           
-          // Display analysis
-          console.log(chalk.cyan('\n🧩 Plugin Implementation Analysis:'));
-          console.log(chalk.white(implementationAnalysis.content));
-          
+          // Display the explanation
+          console.log(chalk.cyan('\n📚 Plugin Implementation Guide:'));
+          console.log(chalk.white(explanation));
+          console.log();
         } catch (error) {
           spinner.fail(`Failed to analyze plugin implementation: ${error instanceof Error ? error.message : String(error)}`);
         } finally {
-          // Stop MCP server
-          await mcpServer.stop();
+          // Stop MCP server if we started it
+          if (mcpServer) {
+            await mcpServer.stop();
+            console.log(chalk.green('✓ MCP server stopped'));
+          }
         }
       } catch (error) {
         console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+        // Stop MCP server if we started it
+        if (mcpServer) {
+          await mcpServer.stop();
+        }
       }
     });
     
@@ -617,7 +635,7 @@ Describe your strategy here. Include:
         }
         
         // Analyze code
-        spinner.start(`Analyzing code...`);
+        spinner.start('Analyzing code...');
         
         try {
           const codeAnalysis = await llmProvider.analyzeAndImproveCode(code, language);
@@ -663,7 +681,7 @@ function updatePackageJson(pluginName: string, plugin: any): void {
     }
     
     // Make sure the plugin is in the dependencies
-    packageJson.dependencies[`@elizaos-plugins/plugin-${pluginName}`] = `^${plugin.version}`;
+    packageJson.dependencies[`@elizaos/plugin-${pluginName}`] = `^${plugin.version}`;
     
     // Write back to package.json
     fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
@@ -679,9 +697,9 @@ async function printDependencyTree(plugin: any, allPlugins: Record<string, any>,
   console.log(`${prefix}${prefix ? '└─ ' : ''}${chalk.green(plugin.name)} (${chalk.yellow(plugin.version)})`);
   
   // Find Eliza plugin dependencies
-  const elizaDeps = Object.keys(plugin.dependencies)
-    .filter(dep => dep.startsWith('@elizaos-plugins/plugin-'))
-    .map(dep => dep.replace('@elizaos-plugins/plugin-', ''));
+  const elizaDeps = Object.keys(plugin.dependencies || {})
+    .filter(dep => dep.startsWith('@elizaos/plugin-'))
+    .map(dep => dep.replace('@elizaos/plugin-', ''));
   
   for (const [index, depName] of elizaDeps.entries()) {
     const depPlugin = allPlugins[depName];

@@ -1,16 +1,16 @@
 import path from 'path';
 import fs from 'fs';
-import ora, { Ora } from 'ora';
+import ora from 'ora';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { LlmProvider } from '../llm/provider.js';
 import { McpClient } from '../mcp/client.js';
 import { PluginRegistry } from '../plugins/registry.js';
 import { buildStrategyInteractively } from '../strategy/interactive-builder.js';
-import { CharacterConfig, generateCharacterForSetup, saveCharacterConfig } from './character.js';
+import { CharacterConfig, generateCharacterForSetup } from './character.js';
 import { DocResponse } from '../mcp/server.js';
 import { checkSystemPrerequisites, validateProjectStructure } from './prerequisites.js';
-import { analyzeEnvironment, generateEnvFile, extractEnvVariablesFromFiles, EnvVariable } from './environment-analyzer.js';
+import { analyzeEnvironment } from './environment-analyzer.js';
 import { getInstalledPlugins, checkPluginCompatibility, installPlugin, PluginInfo, updateProjectStructure } from './plugin-compatibility.js';
 
 /**
@@ -369,21 +369,87 @@ export class AgentSetup {
     try {
       console.log(chalk.cyan('\n📈 Understanding Your Trading Goals\n'));
       
-      // Prompt for trading goals
-      const { tradingGoals } = await inquirer.prompt([
+      // Provide guidance about what to include
+      console.log(chalk.gray('Please provide information about:'));
+      console.log(chalk.gray('- What assets you want to trade (e.g., BTC, ETH, or specific tokens)'));
+      console.log(chalk.gray('- Your preferred timeframes (e.g., 1h, 4h, daily)'));
+      console.log(chalk.gray('- Risk tolerance (e.g., conservative, moderate, aggressive)'));
+      console.log(chalk.gray('- Any specific indicators or strategies you\'re interested in'));
+      console.log(chalk.gray('- Any other preferences or constraints\n'));
+      
+      // Use a series of simple inputs instead of an editor
+      const { assets } = await inquirer.prompt([
         {
-          type: 'editor',
-          name: 'tradingGoals',
-          message: 'Please describe your trading goals and strategy preferences:',
-          default: 
-`Here you can describe:
-- What assets you want to trade (e.g., BTC, ETH, or specific tokens)
-- Your preferred timeframes (e.g., 1h, 4h, daily)
-- Risk tolerance (e.g., conservative, moderate, aggressive)
-- Any specific indicators or strategies you're interested in
-- Any other preferences or constraints`,
+          type: 'input',
+          name: 'assets',
+          message: 'What assets would you like to trade?',
+          default: 'BTC, ETH',
         }
       ]);
+      
+      const { timeframes } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'timeframes',
+          message: 'What timeframes are you interested in?',
+          default: '1h, 4h, daily',
+        }
+      ]);
+      
+      const { riskTolerance } = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'riskTolerance',
+          message: 'What is your risk tolerance?',
+          choices: ['Conservative', 'Moderate', 'Aggressive'],
+          default: 'Moderate',
+        }
+      ]);
+      
+      const { indicators } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'indicators',
+          message: 'Any specific indicators or strategies you\'re interested in?',
+          default: 'Moving averages, RSI, MACD',
+        }
+      ]);
+      
+      const { otherPreferences } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'otherPreferences',
+          message: 'Any other preferences or constraints?',
+          default: '',
+        }
+      ]);
+      
+      // Combine the inputs into a single trading goals string
+      const tradingGoals = `
+Assets: ${assets}
+Timeframes: ${timeframes}
+Risk Tolerance: ${riskTolerance}
+Indicators/Strategies: ${indicators}
+${otherPreferences ? `Other Preferences: ${otherPreferences}` : ''}
+`.trim();
+      
+      // Display the combined trading goals
+      console.log(chalk.cyan('\nYour Trading Goals Summary:'));
+      console.log(chalk.white(tradingGoals));
+      
+      const { confirmGoals } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'confirmGoals',
+          message: 'Does this summary accurately reflect your trading goals?',
+          default: true,
+        }
+      ]);
+      
+      if (!confirmGoals) {
+        console.log(chalk.yellow('\nLet\'s try again.'));
+        return await this.understandTradingGoals();
+      }
       
       // Store the trading goals
       this.session.tradingGoals = tradingGoals;
@@ -460,20 +526,8 @@ Format your response as JSON: {
         }
       }
       
-      // Get confirmation
-      const { confirmed } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'confirmed',
-          message: 'Does this analysis accurately reflect your trading goals?',
-          default: true
-        }
-      ]);
-      
-      if (!confirmed) {
-        console.log(chalk.yellow('\nLet\'s refine your trading goals.'));
-        return await this.understandTradingGoals();
-      }
+      // Replace the confirmation prompt with just an informational message
+      console.log(chalk.gray('\nThis analysis will be used to recommend plugins and build your strategy.\n'));
       
       this.completeStep('trading-goals');
     } catch (error) {
@@ -665,6 +719,7 @@ Keep it clear and detailed but concise (less than 300 words).`;
       // Use the strategy to recommend plugins
       this.spinner.start('Finding plugins to match your strategy...');
       
+      // No fallback - if this fails, we'll let the error propagate
       const pluginRecommendations = await this.llmProvider.recommendPluginsForStrategy(strategyDescription);
       
       this.spinner.succeed(`Found ${pluginRecommendations.length} recommended plugins`);
@@ -672,57 +727,51 @@ Keep it clear and detailed but concise (less than 300 words).`;
       // Display the recommendations
       console.log(chalk.cyan('\n🔌 Recommended Plugins:\n'));
       
-      const pluginChoices = pluginRecommendations.map(plugin => ({
-        name: `${plugin.name} (${Math.round(plugin.confidence * 100)}% confidence) - ${plugin.reasoning.substring(0, 100)}...`,
-        value: plugin.name,
-        short: plugin.name,
-        confidence: plugin.confidence
-      }));
-      
-      // Always ensure basic plugins are available
-      const essentialPlugins = ['crypto-market-data', 'trading-signals', 'risk-management'];
-      
-      for (const plugin of essentialPlugins) {
-        if (!pluginChoices.some(p => p.value === plugin)) {
-          pluginChoices.push({
-            name: `${plugin} (Essential plugin)`,
-            value: plugin,
-            short: plugin,
-            confidence: 1
-          });
+      const pluginChoices = pluginRecommendations.map(plugin => {
+        // Ensure correct namespace
+        let normalizedName = plugin.name;
+        
+        // If name already includes @elizaos-plugins/, replace with @elizaos/
+        if (normalizedName.startsWith('@elizaos-plugins/')) {
+          normalizedName = normalizedName.replace('@elizaos-plugins/', '@elizaos/');
         }
-      }
+        // If name doesn't have a namespace, add @elizaos/ namespace
+        else if (!normalizedName.startsWith('@')) {
+          normalizedName = normalizedName.startsWith('plugin-') 
+            ? `@elizaos/${normalizedName}` 
+            : `@elizaos/plugin-${normalizedName}`;
+        }
+        
+        return {
+          name: `${plugin.name} (${Math.round(plugin.confidence * 100)}% confidence) - ${plugin.reasoning.substring(0, 100)}...`,
+          value: normalizedName,
+          short: normalizedName,
+          confidence: plugin.confidence
+        };
+      });
       
       // Sort by confidence
       pluginChoices.sort((a, b) => b.confidence - a.confidence);
       
-      // Display and select plugins
+      // Allow user to select plugins
       const { selectedPlugins } = await inquirer.prompt([
         {
           type: 'checkbox',
           name: 'selectedPlugins',
           message: 'Select plugins to install:',
           choices: pluginChoices,
-          default: pluginChoices
-            .filter(p => p.confidence > 0.7 || essentialPlugins.includes(p.value))
-            .map(p => p.value),
-          pageSize: 10
+          default: pluginChoices.filter(p => p.confidence > 0.7).map(p => p.value)
         }
       ]);
       
-      // Store selected plugins
       this.session.selectedPlugins = selectedPlugins;
       this.saveSession();
       
       this.completeStep('plugin-recommendation');
     } catch (error) {
+      this.spinner.fail(`Failed to recommend plugins: ${error instanceof Error ? error.message : String(error)}`);
       this.failStep('plugin-recommendation', error instanceof Error ? error.message : String(error));
-      console.warn(`Plugin recommendation failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(chalk.yellow('Using default plugins instead...'));
-      
-      // Use default plugins if recommendation fails
-      this.session.selectedPlugins = ['crypto-market-data', 'trading-signals', 'risk-management'];
-      this.saveSession();
+      throw new Error(`Plugin recommendation failed. Please check your connection to the plugin registry: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   

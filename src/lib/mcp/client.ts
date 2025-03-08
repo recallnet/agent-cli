@@ -61,6 +61,10 @@ export class McpClient {
    */
   async getDocumentation(request: DocRequest): Promise<DocResponse> {
     try {
+      console.log(`🌎 CLIENT: Sending documentation request to server for ${request.type} - ${request.query}`);
+      console.log(`🌎 CLIENT: Request URL: ${this.options.baseUrl}/documentation`);
+      console.log('🌎 CLIENT: Request params:', request.params);
+      
       const response = await axios.post(`${this.options.baseUrl}/documentation`, request, {
         timeout: this.options.timeout,
         headers: {
@@ -68,9 +72,14 @@ export class McpClient {
         },
       });
       
+      console.log(`🌎 CLIENT: Received documentation response with status: ${response.status}`);
       return response.data as DocResponse;
     } catch (error) {
-      console.error(`Failed to fetch documentation: ${error instanceof Error ? error.message : String(error)}`);
+      if (axios.isAxiosError(error) && error.response) {
+        console.error(`🌎 CLIENT: Documentation request failed with status: ${error.response.status}`);
+        console.error('🌎 CLIENT: Server response:', error.response.data);
+      }
+      console.error(`🌎 CLIENT: Failed to fetch documentation: ${error instanceof Error ? error.message : String(error)}`);
       throw new Error(`MCP client error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -79,11 +88,30 @@ export class McpClient {
    * Get plugin documentation
    */
   async getPluginDocumentation(pluginName: string, context?: string): Promise<DocResponse> {
-    return this.getDocumentation({
-      type: DocSourceType.PLUGIN,
-      query: pluginName,
-      params: context ? { context } : undefined
-    });
+    // Ensure we're using the correct namespace format
+    // If it already starts with @, assume it's already in the right format
+    // Otherwise, add the correct namespace
+    const formattedPluginName = pluginName.startsWith('@') 
+      ? pluginName 
+      : pluginName.startsWith('plugin-')
+        ? `@elizaos/${pluginName}`
+        : `@elizaos/plugin-${pluginName}`;
+    
+    console.log(`🔌 CLIENT: Requesting documentation for plugin: ${formattedPluginName}`);
+    
+    try {
+      const response = await this.getDocumentation({
+        type: DocSourceType.PLUGIN,
+        query: formattedPluginName,
+        ...(context ? { context } : {})
+      });
+      
+      console.log(`✅ CLIENT: Successfully received documentation for ${formattedPluginName}`);
+      return response;
+    } catch (error) {
+      console.error(`❌ CLIENT: Failed to get documentation for plugin ${formattedPluginName}: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
   
   /**
@@ -200,43 +228,34 @@ export class McpClient {
    */
   async scanPluginRepository(pluginName: string, options: GithubScanOptions = {}, context?: string): Promise<DocResponse> {
     try {
-      // First, get the plugin info to locate the repository
-      const pluginDoc = await this.getPluginDocumentation(pluginName);
-      const pluginInfo = pluginDoc.metadata;
+      // Prepare the repository path (assuming GitHub organization by default)
+      let repoPath: string;
       
-      if (!pluginInfo || !pluginInfo.repository) {
-        throw new Error(`Could not find repository information for plugin ${pluginName}`);
+      // Handle if the plugin name is the full package name (with @elizaos/)
+      if (pluginName.startsWith('@elizaos/')) {
+        const pluginNameWithoutPrefix = pluginName.replace('@elizaos/', '');
+        repoPath = `elizaos/${pluginNameWithoutPrefix}`;
+      } 
+      // Handle if the plugin name is already a full GitHub path
+      else if (pluginName.includes('/') && !pluginName.startsWith('@')) {
+        repoPath = pluginName;
+      } 
+      // Default case: convert plugin name to GitHub repo path
+      else {
+        const repoName = pluginName.startsWith('plugin-') ? pluginName : `plugin-${pluginName}`;
+        repoPath = `elizaos/${repoName}`;
       }
       
-      // Extract GitHub repository path from URL
-      // e.g., "https://github.com/elizaos-plugins/plugin-crypto-market-data" -> "elizaos-plugins/plugin-crypto-market-data"
-      const repoUrl = pluginInfo.repository;
-      const repoMatch = repoUrl.match(/github\.com\/([^/]+\/[^/]+)/);
+      console.log(`Scanning repository: ${repoPath}`);
       
-      if (!repoMatch) {
-        throw new Error(`Could not parse GitHub repository URL: ${repoUrl}`);
-      }
-      
-      const repoPath = repoMatch[1];
-      
-      // Create a context that combines plugin info with user's context
-      const enhancedContext = context ? 
-        `Plugin: ${pluginName}. ${pluginInfo.description}. ${context}` :
-        `Plugin: ${pluginName}. ${pluginInfo.description}. How to use this plugin, its main features, and integration examples.`;
-      
-      // Scan the repository
-      return this.scanGithubRepository(repoPath, {
-        branch: 'main',
-        fileTypes: ['.ts', '.js', '.json', '.md'],
-        maxDepth: 3,
-        maxFiles: 20,
-        fetchContent: true,
-        includeDependencies: true,
-        ...options,
-      }, enhancedContext);
+      return await this.scanGithubRepository(repoPath, options, context);
     } catch (error) {
-      console.error(`Failed to scan plugin repository for ${pluginName}: ${error instanceof Error ? error.message : String(error)}`);
-      throw new Error(`MCP client scan error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Error scanning plugin repository: ${error instanceof Error ? error.message : String(error)}`);
+      return {
+        content: `Error scanning plugin repository: ${error instanceof Error ? error.message : String(error)}`,
+        source: `plugin:${pluginName}`,
+        timestamp: Date.now()
+      };
     }
   }
   
@@ -273,14 +292,20 @@ ${scanResult.content}
 
 ### Basic Usage
 \`\`\`typescript
-// Import the plugin
-${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-plugins/plugin-${pluginName}';`}
+${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos/plugin-${pluginName}';`}
 
-// Initialize the plugin
-// (Add specific initialization based on plugin type)
-
-// Use the plugin functionality
-// (Add specific usage examples based on plugin purpose)
+async function exampleUsage() {
+  // Example usage of the plugin
+  const plugin = new PluginName({
+    // Configuration options
+    apiKey: 'your-api-key',
+    secret: 'your-secret'
+  });
+  
+  // Example method calls
+  const result = await plugin.someMethod();
+  console.log(result);
+}
 \`\`\`
 `;
       
@@ -321,13 +346,24 @@ ${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-p
    */
   async listPlugins(): Promise<Record<string, any>> {
     try {
+      console.log(`MCP Client: Requesting plugins from ${this.options.baseUrl}/plugins`);
       const response = await axios.get(`${this.options.baseUrl}/plugins`, {
         timeout: this.options.timeout,
       });
       
+      // Add more validation
+      if (!response.data || !response.data.plugins) {
+        console.warn('MCP Client: Received invalid response format from server');
+        return {};
+      }
+      
       return response.data.plugins || {};
     } catch (error) {
-      console.error(`Failed to list plugins: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`MCP Client: Failed to list plugins: ${error instanceof Error ? error.message : String(error)}`);
+      // More detailed error message
+      if (axios.isAxiosError(error) && error.response) {
+        console.error(`Status: ${error.response.status}, Data:`, error.response.data);
+      }
       throw new Error(`MCP client error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -421,7 +457,7 @@ ${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-p
       
       // Get plugin docs for indicators mentioned in the strategy
       if (strategy.indicators && Array.isArray(strategy.indicators)) {
-        const indicatorPlugins = this.mapIndicatorsToPlugins(strategy.indicators);
+        const indicatorPlugins = await this.mapIndicatorsToPlugins(strategy.indicators);
         for (const plugin of indicatorPlugins) {
           try {
             const pluginDocs = await this.getPluginDocumentation(plugin, context);
@@ -463,37 +499,92 @@ ${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-p
   /**
    * Map indicators to likely plugin names
    */
-  private mapIndicatorsToPlugins(indicators: string[]): string[] {
-    const pluginMap: Record<string, string[]> = {
-      'macd': ['trading-signals', 'technical-indicators'],
-      'rsi': ['trading-signals', 'technical-indicators'],
-      'moving average': ['trading-signals', 'technical-indicators'],
-      'bollinger': ['trading-signals', 'technical-indicators'],
-      'volume': ['crypto-market-data', 'market-volume-analyzer'],
-      'price': ['crypto-market-data', 'price-feed'],
-      'order book': ['order-book-analyzer', 'exchange-connector'],
-      'candle': ['crypto-market-data', 'candlestick-patterns']
-    };
-    
-    const plugins = new Set<string>();
-    
-    // Default plugins that are almost always useful
-    plugins.add('crypto-market-data');
-    plugins.add('trading-signals');
-    
-    // Add plugins based on indicators
-    for (const indicator of indicators) {
-      const lowerIndicator = indicator.toLowerCase();
+  private async mapIndicatorsToPlugins(indicators: string[]): Promise<string[]> {
+    try {
+      // Get all available plugins
+      const plugins = await this.listPlugins();
       
-      for (const [key, pluginsForIndicator] of Object.entries(pluginMap)) {
-        if (lowerIndicator.includes(key)) {
-          for (const plugin of pluginsForIndicator) {
-            plugins.add(plugin);
+      // Create a set to store matching plugins
+      const matchingPlugins = new Set<string>();
+      
+      // Check each indicator against each plugin's description
+      for (const indicator of indicators) {
+        const lowerIndicator = indicator.toLowerCase();
+        
+        for (const [pluginName, pluginInfo] of Object.entries(plugins)) {
+          // If the plugin description or name contains the indicator, consider it a match
+          if (
+            pluginInfo.description?.toLowerCase().includes(lowerIndicator) || 
+            pluginName.toLowerCase().includes(lowerIndicator)
+          ) {
+            matchingPlugins.add(pluginName);
           }
         }
       }
+      
+      // If we found matches, return them
+      if (matchingPlugins.size > 0) {
+        return Array.from(matchingPlugins);
+      }
+      
+      // Otherwise, return an empty array
+      return [];
+    } catch (error) {
+      console.warn(`Failed to map indicators to plugins: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
     }
+  }
+  
+  /**
+   * Test method to fetch documentation for a specific plugin
+   * @param pluginName The name of the plugin to fetch documentation for
+   */
+  public async testFetchPluginDocumentation(pluginName: string): Promise<void> {
+    console.log(`🧪 TEST: Fetching documentation for plugin ${pluginName}`);
     
-    return Array.from(plugins);
+    try {
+      const response = await axios.post(`${this.options.baseUrl}/query`, {
+        type: 'plugin',
+        query: pluginName
+      });
+      
+      if (response.status === 200) {
+        console.log(`✅ SUCCESS: Got documentation for ${pluginName}`);
+        console.log(`Source: ${response.data.source}`);
+        console.log(`Content length: ${response.data.content.length} characters`);
+        console.log(`First 150 chars: ${response.data.content.substring(0, 150)}...`);
+      } else {
+        console.error(`❌ ERROR: Failed to fetch documentation for ${pluginName} - Status: ${response.status}`);
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response) {
+        console.error(`❌ ERROR: Failed to fetch documentation for ${pluginName} - Status: ${error.response.status}`);
+        
+        // Retry with fallback option
+        console.log('🔄 Retrying with fallback option...');
+        try {
+          const fallbackResponse = await axios.post(`${this.options.baseUrl}/query`, {
+            type: 'plugin',
+            query: pluginName,
+            params: {
+              useFallback: 'true'
+            }
+          });
+          
+          if (fallbackResponse.status === 200) {
+            console.log(`✅ SUCCESS (fallback): Got documentation for ${pluginName}`);
+            console.log(`Source: ${fallbackResponse.data.source}`);
+            console.log(`Content length: ${fallbackResponse.data.content.length} characters`);
+            console.log(`First 150 chars: ${fallbackResponse.data.content.substring(0, 150)}...`);
+            return;
+          }
+        } catch (fallbackError) {
+          console.error(`❌ ERROR: Fallback also failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+        }
+      }
+      
+      console.error(`❌ ERROR: Failed to fetch documentation for ${pluginName}`);
+      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 } 

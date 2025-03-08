@@ -7,6 +7,8 @@ import * as path from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import * as cheerio from 'cheerio';
+import { AxiosResponse } from 'axios';
+import { URL } from 'url';
 
 /**
  * MCP Server options
@@ -127,14 +129,18 @@ export class McpServer extends EventEmitter {
   
   constructor(options: Partial<McpServerOptions> = {}) {
     super();
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.log('!!!      USING UPDATED MCP SERVER WITH DOCS SITE       !!!');
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    
     this.options = {
-      port: options.port || Number(process.env.MCP_SERVER_PORT) || 3333,
-      cacheTtl: options.cacheTtl || Number(process.env.MCP_CACHE_TTL) || 3600000, // 1 hour
-      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL || 'https://registry.elizaos.com/plugins',
+      port: options.port || parseInt(process.env.MCP_PORT || '3333', 10),
+      cacheTtl: options.cacheTtl || parseInt(process.env.CACHE_TTL || '3600000', 10), // Default 1 hour
+      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL || 'https://raw.githubusercontent.com/elizaos/registry/main/index.json',
       docsBasePath: options.docsBasePath || process.env.DOCS_BASE_PATH || path.join(process.cwd(), 'docs'),
       githubApiToken: options.githubApiToken || process.env.GITHUB_API_TOKEN,
-      maxFileSizeBytes: options.maxFileSizeBytes || Number(process.env.MAX_FILE_SIZE_BYTES) || 1024 * 1024, // 1MB
-      maxRepositoryFiles: options.maxRepositoryFiles || Number(process.env.MAX_REPOSITORY_FILES) || 100,
+      maxFileSizeBytes: options.maxFileSizeBytes || parseInt(process.env.MAX_FILE_SIZE_BYTES || '1000000', 10), // Default 1MB
+      maxRepositoryFiles: options.maxRepositoryFiles || parseInt(process.env.MAX_REPOSITORY_FILES || '100', 10) // Default 100 files
     };
     
     // Initialize plugin registry
@@ -190,33 +196,45 @@ export class McpServer extends EventEmitter {
    * Get documentation from cache or fetch it
    */
   private async getDocumentation(request: DocRequest): Promise<DocResponse> {
+    console.log(`🔎 SERVER: Documentation request received for ${request.type} - ${request.query}`);
+    
     const cacheKey = `${request.type}:${request.query}:${JSON.stringify(request.params || {})}`;
     
     // Check cache first
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.options.cacheTtl) {
+      console.log(`🔎 SERVER: Cache hit for ${request.query}`);
       this.emit('cache-hit', { request });
       return cached;
     }
+    
+    console.log(`🔎 SERVER: Cache miss for ${request.query}, fetching fresh documentation`);
     
     // Fetch documentation based on source type
     let docResponse: DocResponse;
     
     try {
+      console.log(`🔎 SERVER: Fetching ${request.type} documentation for: ${request.query}`);
+      
       switch (request.type) {
       case DocSourceType.PLUGIN:
+        console.log('🔎 SERVER: Routing to fetchPluginDocumentation');
         docResponse = await this.fetchPluginDocumentation(request.query, request.params);
         break;
       case DocSourceType.GITHUB:
+        console.log('🔎 SERVER: Routing to fetchGithubDocumentation');
         docResponse = await this.fetchGithubDocumentation(request.query, request.params);
         break;
       case DocSourceType.GITHUB_REPO:
+        console.log('🔎 SERVER: Routing to scanGithubRepository');
         docResponse = await this.scanGithubRepository(request.query, request.params);
         break;
       case DocSourceType.URL:
+        console.log('🔎 SERVER: Routing to fetchUrlDocumentation');
         docResponse = await this.fetchUrlDocumentation(request.query);
         break;
       case DocSourceType.MARKDOWN:
+        console.log('🔎 SERVER: Routing to fetchMarkdownDocumentation');
         docResponse = await this.fetchMarkdownDocumentation(request.query);
         break;
       case DocSourceType.COMPETITION:
@@ -493,94 +511,126 @@ export class McpServer extends EventEmitter {
   }
   
   /**
-   * Fetch plugin documentation
+   * Fetch documentation for a plugin from GitHub or the registry
    */
   private async fetchPluginDocumentation(pluginName: string, params?: Record<string, string>): Promise<DocResponse> {
+    console.log(`🔍 MCP: Fetching documentation for plugin: ${pluginName}`);
+    
+    // Check if we should use fallback right away
+    const useFallback = params?.useFallback === 'true';
+    if (useFallback) {
+      console.log(`🔍 MCP: Using fallback documentation as requested for ${pluginName}`);
+      return this.generateFallbackPluginDocumentation(pluginName);
+    }
+    
     try {
-      // Get plugin info from registry
-      const pluginInfo = await this.pluginRegistry.getPlugin(pluginName);
-      
-      if (!pluginInfo) {
-        console.log(`Plugin ${pluginName} not found in registry, trying GitHub fallback`);
-        
-        // Try to find it on GitHub instead
-        try {
-          // If plugin name has a prefix like "plugin-", use it directly
-          const repoName = pluginName.startsWith('plugin-') 
-            ? pluginName 
-            : `plugin-${pluginName}`;
-            
-          // First try elizaos-plugins organization
-          // Pass extra parameters through the params object
-          const githubParams = {
-            path: 'README.md',
-            branch: 'main',
-            ...(params?.context ? { context: params.context } : {})
-          };
-          
-          return await this.fetchGithubDocumentation(`elizaos-plugins/${repoName}`, githubParams);
-        } catch (githubErr) {
-          console.warn(`Failed to fetch from GitHub: ${githubErr instanceof Error ? githubErr.message : String(githubErr)}`);
-          throw new Error(`Plugin ${pluginName} not found in registry or GitHub`);
-        }
+      // First, try to get the documentation from GitHub
+      const githubDoc = await this.fetchPluginDocumentationFromGitHub(pluginName, params);
+      if (githubDoc) {
+        console.log(`✅ MCP: Found documentation for ${pluginName} on GitHub`);
+        return githubDoc;
       }
       
-      // Fetch README if available
-      let readmeContent = '';
-      if (pluginInfo.documentation) {
-        try {
-          // If documentation is a URL, fetch it
-          if (pluginInfo.documentation.startsWith('http')) {
-            // Convert GitHub URL to raw content URL if needed
-            const readmeUrl = pluginInfo.documentation.includes('github.com') && pluginInfo.documentation.includes('#readme')
-              ? this.convertGithubUrlToRaw(pluginInfo.documentation.replace('#readme', '/blob/main/README.md'))
-              : pluginInfo.documentation;
-            
-            const response = await axios.get(readmeUrl);
-            readmeContent = response.data;
-          }
-        } catch (readmeError) {
-          console.warn(`Failed to fetch README for ${pluginName}: ${readmeError instanceof Error ? readmeError.message : String(readmeError)}`);
-        }
+      // If GitHub fails, try the docs website
+      const docsWebsiteDoc = await this.fetchDocsWebsiteDocumentation(pluginName);
+      if (docsWebsiteDoc) {
+        console.log(`✅ MCP: Found documentation for ${pluginName} on docs website`);
+        return docsWebsiteDoc;
       }
       
-      // Combine plugin info and README content
-      const content = `
-# ${pluginInfo.name}
+      // If both methods fail, attempt to generate fallback documentation
+      return this.generateFallbackPluginDocumentation(pluginName);
+    } catch (error) {
+      console.error(`❌ MCP: Error fetching plugin documentation: ${error instanceof Error ? error.message : String(error)}`);
+      
+      // Return minimal fallback documentation
+      return this.generateFallbackPluginDocumentation(pluginName);
+    }
+  }
+  
+  /**
+   * Attempt to fetch plugin documentation from GitHub
+   */
+  private async fetchPluginDocumentationFromGitHub(pluginName: string, params?: Record<string, string>): Promise<DocResponse | null> {
+    // Normalize the plugin name for GitHub search
+    const normalizedName = pluginName.replace(/^@elizaos\//, '');
+    console.log(`🔍 GITHUB: Looking for plugin documentation: ${normalizedName}`);
+    
+    // Common GitHub repository formats for Eliza plugins
+    const possibleRepos = [
+      `elizaos/${normalizedName}`,
+      `elizaos/eliza-${normalizedName}`,
+      `elizaos/plugin-${normalizedName}`
+    ];
+    
+    for (const repo of possibleRepos) {
+      try {
+        console.log(`🔍 GITHUB: Trying repository: ${repo}`);
+        const doc = await this.fetchGithubDocumentation(repo, params);
+        return doc;
+      } catch (error) {
+        console.log(`🔍 GITHUB: Repository ${repo} not found or error: ${error instanceof Error ? error.message : String(error)}`);
+        // Continue to the next possible repo
+      }
+    }
+    
+    console.log(`❌ GITHUB: No GitHub documentation found for ${pluginName}`);
+    return null;
+  }
+  
+  /**
+   * Generate fallback documentation when no official docs are found
+   */
+  private async generateFallbackPluginDocumentation(pluginName: string): Promise<DocResponse> {
+    console.log(`🔄 MCP: Generating fallback documentation for ${pluginName}`);
+    
+    // Normalize name
+    const normalizedName = pluginName.replace(/^@elizaos\//, '');
+    
+    // Determine plugin type
+    let pluginType = 'plugin';
+    if (normalizedName.startsWith('adapter-')) {
+      pluginType = 'adapter';
+    } else if (normalizedName.startsWith('client-')) {
+      pluginType = 'client';
+    }
+    
+    // Generate basic documentation
+    const content = `# ${pluginName}
 
-${pluginInfo.description}
-
-## Version
-${pluginInfo.version}
+## Overview
+This is an Eliza ${pluginType}. No detailed documentation could be found.
 
 ## Installation
-\`\`\`bash
-npm install ${pluginInfo.name}
+To install this ${pluginType}, use:
+\`\`\`
+npm install ${pluginName}
 \`\`\`
 
-## Required Environment Variables
-${pluginInfo.requiredEnv && pluginInfo.requiredEnv.length > 0
-    ? pluginInfo.requiredEnv.map(env => `- \`${env}\``).join('\n')
-    : 'No environment variables required.'}
+## Basic Usage
+To use this ${pluginType} in your Eliza project, you'll typically need to include it in your configuration:
 
-## Dependencies
-${pluginInfo.dependencies && Object.keys(pluginInfo.dependencies).length > 0
-    ? Object.entries(pluginInfo.dependencies).map(([name, version]) => `- ${name}: ${version}`).join('\n')
-    : 'No dependencies.'}
-
-${readmeContent ? `## Documentation\n\n${readmeContent}` : ''}
-`;
-      
-      return {
-        content,
-        source: `plugin:${pluginName}`,
-        timestamp: Date.now(),
-        metadata: pluginInfo,
-      };
-    } catch (error) {
-      console.error(`Failed to fetch plugin documentation for ${pluginName}: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
+\`\`\`javascript
+// Example configuration (may vary based on the specific ${pluginType})
+const config = {
+  ${pluginType}s: {
+    ${normalizedName.replace(/^(adapter-|client-|plugin-)/, '')}: {
+      // Configuration options would go here
     }
+  }
+};
+\`\`\`
+
+## Additional Resources
+- [Eliza Documentation](https://elizaos.github.io/eliza/)
+- [GitHub Repository](https://github.com/elizaos)
+`;
+
+    return {
+      content,
+      source: `Generated fallback documentation for ${pluginName}`,
+      timestamp: Date.now()
+    };
   }
   
   /**
@@ -1790,6 +1840,678 @@ const item: ${exp.name} = {
   }
   
   /**
+   * Scrape all plugin documentation URLs from the packages directory
+   * This is used to build a mapping of plugin names to their documentation URLs
+   */
+  private async scrapePluginDocUrls(): Promise<Map<string, string>> {
+    // The base URL for the Eliza documentation site
+    const baseUrl = 'https://elizaos.github.io/eliza';
+    const packagesBaseUrl = `${baseUrl}/packages/`;
+    
+    console.log(`🔍 DOCS SITE: Scraping plugin documentation URLs from ${packagesBaseUrl}`);
+    
+    const urlMapping = new Map<string, string>();
+    
+    try {
+      // Fetch the packages directory
+      console.log(`🔍 DOCS SITE: Sending request to ${packagesBaseUrl}`);
+      const response = await axios.get(packagesBaseUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; RecallCLI/1.0)'
+        },
+        timeout: 10000 // 10 second timeout
+      });
+      console.log(`🔍 DOCS SITE: Received response with status ${response.status}`);
+      
+      // Debug: Show response headers
+      console.log('🔍 DOCS SITE: Response headers:', JSON.stringify(response.headers, null, 2));
+      
+      if (response.headers['content-type']?.includes('text/html')) {
+        // Add hardcoded known URLs to ensure we have the basics
+        this.addKnownPluginUrls(urlMapping, baseUrl);
+        
+        const $ = cheerio.load(response.data);
+        
+        // Get all links from the page
+        const links = $('a');
+        
+        // Extract all plugin links
+        console.log(`🔍 DOCS SITE: Found ${links.length} links on packages page`);
+        
+        if (links.length === 0) {
+          console.log('🔍 DOCS SITE: WARNING - No links found on the page. Here\'s the HTML:');
+          console.log(response.data.substring(0, 500) + '...');
+        }
+        
+        // Process subdirectories first to ensure they're done
+        const subDirs: Array<{url: string, type: string}> = [];
+        links.each((i, link) => {
+          const href = $(link).attr('href');
+          if (href === 'adapters/' || href === 'clients/') {
+            subDirs.push({ url: packagesBaseUrl + href, type: href.replace('/', '') });
+          }
+        });
+        
+        // Process subdirectories in parallel
+        console.log(`🔍 DOCS SITE: Processing ${subDirs.length} subdirectories`);
+        const subDirPromises = subDirs.map(dir => 
+          this.processSubdirectory(dir.url, dir.type, urlMapping).catch(error => {
+            console.error(`🔍 DOCS SITE: Error processing subdirectory ${dir.type}: ${error instanceof Error ? error.message : String(error)}`);
+          })
+        );
+        
+        // Wait for all subdirectories to be processed
+        await Promise.all(subDirPromises);
+        
+        // Add direct plugin URLs 
+        links.each((i, link) => {
+          const href = $(link).attr('href');
+          
+          if (href && href !== '../' && href !== './') {
+            // Skip subdirectories as they've already been processed
+            if (href === 'adapters/' || href === 'clients/') {
+              return;
+            }
+            
+            // Log each link to understand what we're processing
+            console.log(`🔍 DOCS SITE: Examining plugin link: href="${href}"`);
+            
+            // Clean the URL (remove trailing slash)
+            const cleanUrl = `${packagesBaseUrl}${href}`.replace(/\/$/, '');
+            
+            // Plugin URL pattern
+            if (href.startsWith('plugin-')) {
+              const pluginName = href.replace(/\/$/, '');
+              urlMapping.set(pluginName, cleanUrl);
+              urlMapping.set(`@elizaos/${pluginName}`, cleanUrl);
+              console.log(`🔍 DOCS SITE: Mapped plugin "${pluginName}" → ${cleanUrl}`);
+            }
+          }
+        });
+        
+        console.log(`🔍 DOCS SITE: Scraped ${urlMapping.size} plugin documentation URLs`);
+      } else {
+        console.error(`🔍 DOCS SITE: Response is not HTML: ${response.headers['content-type']}`);
+      }
+    } catch (error) {
+      console.error(`🔍 DOCS SITE: Error scraping plugin documentation URLs: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof Error && error.stack) {
+        console.error(`Stack trace: ${error.stack}`);
+      }
+    }
+    
+    return urlMapping;
+  }
+  
+  /**
+   * Add hardcoded known plugin URLs to the mapping
+   * This ensures we have at least the basic plugins covered
+   */
+  private addKnownPluginUrls(urlMapping: Map<string, string>, baseUrl: string): void {
+    const packages = [
+      // Adapters
+      { name: 'adapter-sqlite', url: `${baseUrl}/packages/adapters/sqlite/` },
+      { name: 'adapter-postgres', url: `${baseUrl}/packages/adapters/postgres/` },
+      
+      // Clients
+      { name: 'client-auto', url: `${baseUrl}/packages/clients/auto/` },
+      { name: 'client-direct', url: `${baseUrl}/packages/clients/direct/` },
+      { name: 'client-discord', url: `${baseUrl}/packages/clients/discord/` },
+      { name: 'client-telegram', url: `${baseUrl}/packages/clients/telegram/` },
+      { name: 'client-twitter', url: `${baseUrl}/packages/clients/twitter/` },
+      
+      // Core plugins
+      { name: 'core', url: `${baseUrl}/packages/core/` },
+      { name: 'plugin-bootstrap', url: `${baseUrl}/packages/plugin-bootstrap/` },
+      { name: 'plugin-image-generation', url: `${baseUrl}/packages/plugin-image-generation/` },
+      { name: 'plugin-solana', url: `${baseUrl}/packages/plugin-solana/` },
+      { name: 'plugin-starknet', url: `${baseUrl}/packages/plugin-starknet/` },
+      { name: 'plugin-tee-log', url: `${baseUrl}/packages/plugin-tee-log/` },
+      { name: 'plugin-coingecko', url: `${baseUrl}/packages/plugin-coingecko/` },
+      { name: 'plugin-rabbi-trader', url: `${baseUrl}/packages/plugin-rabbi-trader/` }
+    ];
+    
+    // Add each package with different naming formats
+    for (const pkg of packages) {
+      const { name, url } = pkg;
+      
+      // Base format
+      urlMapping.set(name, url);
+      
+      // With @elizaos prefix
+      urlMapping.set(`@elizaos/${name}`, url);
+      
+      // Handle specific package types
+      if (name.startsWith('adapter-')) {
+        const baseName = name.replace(/^adapter-/, '');
+        urlMapping.set(baseName, url);
+        urlMapping.set(`@elizaos/plugin-${name}`, url);
+      } else if (name.startsWith('client-')) {
+        const baseName = name.replace(/^client-/, '');
+        urlMapping.set(baseName, url);
+        urlMapping.set(`@elizaos/plugin-${name}`, url);
+      } else if (name.startsWith('plugin-')) {
+        const baseName = name.replace(/^plugin-/, '');
+        urlMapping.set(baseName, url);
+      }
+    }
+    
+    console.log(`🔍 DOCS SITE: Added ${packages.length} known plugin URLs to mapping`);
+  }
+  
+  private async processSubdirectory(dirUrl: string, dirType: string, urlMapping: Map<string, string>): Promise<void> {
+    console.log(`🔍 DOCS SITE: Processing ${dirType} subdirectory at ${dirUrl}`);
+    
+    try {
+      const response = await axios.get(dirUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; RecallCLI/1.0)'
+        },
+        timeout: 10000 // 10 second timeout
+      });
+      
+      console.log(`🔍 DOCS SITE: Received response from ${dirType} directory with status ${response.status}`);
+      
+      if (response.headers['content-type']?.includes('text/html')) {
+        const $ = cheerio.load(response.data);
+        const links = $('a');
+        
+        console.log(`🔍 DOCS SITE: Found ${links.length} links in ${dirType} directory`);
+        
+        if (links.length === 0) {
+          console.log(`🔍 DOCS SITE: WARNING - No links found in ${dirType} directory. Here's the HTML:`);
+          console.log(response.data.substring(0, 500) + '...');
+        }
+        
+        links.each((i, link) => {
+          const href = $(link).attr('href');
+          
+          if (href && !href.startsWith('..') && !href.startsWith('./') && href !== './') {
+            // This is a package in the subdirectory
+            console.log(`🔍 DOCS SITE: Found ${dirType} package: ${href}`);
+            
+            // Clean the URL (remove trailing slash)
+            const packageUrl = `${dirUrl}${href}`.replace(/\/$/, '');
+            const packageName = href.replace(/\/$/, '');
+            
+            // Map different naming patterns
+            if (dirType === 'adapters') {
+              // adapter-[name]
+              const adapterName = `adapter-${packageName}`;
+              urlMapping.set(adapterName, packageUrl);
+              urlMapping.set(`@elizaos/${adapterName}`, packageUrl);
+              urlMapping.set(packageName, packageUrl);
+              urlMapping.set(`@elizaos/plugin-${adapterName}`, packageUrl);
+              console.log(`🔍 DOCS SITE: Mapped adapter "${adapterName}" → ${packageUrl}`);
+            } else if (dirType === 'clients') {
+              // client-[name]
+              const clientName = `client-${packageName}`;
+              urlMapping.set(clientName, packageUrl);
+              urlMapping.set(`@elizaos/${clientName}`, packageUrl);
+              urlMapping.set(packageName, packageUrl);
+              urlMapping.set(`@elizaos/plugin-${clientName}`, packageUrl);
+              console.log(`🔍 DOCS SITE: Mapped client "${clientName}" → ${packageUrl}`);
+            }
+          }
+        });
+      } else {
+        console.error(`🔍 DOCS SITE: Response from ${dirType} directory is not HTML: ${response.headers['content-type']}`);
+      }
+    } catch (error) {
+      console.error(`🔍 DOCS SITE: Failed to process ${dirType} subdirectory: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof Error && error.stack) {
+        console.error(`Stack trace: ${error.stack}`);
+      }
+    }
+  }
+  
+  /**
+   * Cache for the plugin documentation URLs
+   * This is used to avoid scraping the packages directory for every request
+   */
+  private pluginDocUrlsCache: Map<string, string> | null = null;
+  private pluginDocUrlsCacheTime: number = 0;
+  private readonly PLUGIN_DOC_URLS_CACHE_TTL = 3600000; // 1 hour
+  
+  /**
+   * Clear the plugin doc URL cache to force a fresh scrape
+   */
+  private clearPluginDocUrlsCache(): void {
+    console.log('🔍 DOCS SITE: Clearing plugin documentation URL cache');
+    this.pluginDocUrlsCache = null;
+    this.pluginDocUrlsCacheTime = 0;
+  }
+  
+  /**
+   * Get the documentation URL for a plugin by name
+   */
+  private async getPluginDocUrl(pluginName: string): Promise<string | null> {
+    // Force a fresh scrape for testing
+    this.clearPluginDocUrlsCache();
+    
+    // Check if we need to refresh the cache or if it doesn't exist
+    if (
+      !this.pluginDocUrlsCache ||
+      Date.now() - this.pluginDocUrlsCacheTime > this.PLUGIN_DOC_URLS_CACHE_TTL
+    ) {
+      console.log('🔍 DOCS SITE: Cache is stale or doesn\'t exist, fetching fresh plugin doc URLs');
+      this.pluginDocUrlsCache = await this.scrapePluginDocUrls();
+      this.pluginDocUrlsCacheTime = Date.now();
+      
+      // Debug: dump the URL mapping
+      console.log('🔍 DOCS SITE: URL mapping entries:', this.pluginDocUrlsCache?.size || 0);
+      if (this.pluginDocUrlsCache) {
+        for (const [key, value] of this.pluginDocUrlsCache.entries()) {
+          console.log(`   → ${key}: ${value}`);
+        }
+      }
+    }
+    
+    // Try different variations of the plugin name to find a match
+    const normalizedName = pluginName.startsWith('@') 
+      ? pluginName.split('/')[1] 
+      : pluginName;
+    
+    // Detect what type of package we're dealing with
+    const isAdapter = normalizedName.includes('adapter') || normalizedName.startsWith('adapter-');
+    const isClient = normalizedName.includes('client') || normalizedName.startsWith('client-');
+    
+    // Basic variations that apply to all types
+    const possibleNames = [
+      pluginName,
+      normalizedName
+    ];
+    
+    // Add type-specific variations
+    if (isAdapter) {
+      // Extract base name (removing adapter- prefix if it exists)
+      const baseName = normalizedName.replace(/^adapter-/, '');
+      
+      possibleNames.push(
+        `adapter-${baseName}`,
+        `@elizaos/adapter-${baseName}`,
+        baseName,
+        // Common mistake formats
+        `@elizaos/plugin-adapter-${baseName}`,
+        `plugin-adapter-${baseName}`
+      );
+    } else if (isClient) {
+      // Extract base name (removing client- prefix if it exists)
+      const baseName = normalizedName.replace(/^client-/, '');
+      
+      possibleNames.push(
+        `client-${baseName}`,
+        `@elizaos/client-${baseName}`,
+        baseName,
+        // Common mistake formats
+        `@elizaos/plugin-client-${baseName}`,
+        `plugin-client-${baseName}`
+      );
+    } else {
+      // Default to plugin variations if no specific type detected
+      const baseName = normalizedName.replace(/^plugin-/, '');
+      
+      possibleNames.push(
+        baseName,
+        `plugin-${baseName}`,
+        `@elizaos/plugin-${baseName}`
+      );
+    }
+    
+    console.log(`🔍 REGISTRY: Looking for plugin ${pluginName} in possible formats:`, possibleNames);
+    
+    // Try to find a match in the cache
+    for (const name of possibleNames) {
+      if (this.pluginDocUrlsCache.has(name)) {
+        return this.pluginDocUrlsCache.get(name) || null;
+      }
+    }
+    
+    // Use fuzzy matching for plugin names if no exact match is found
+    const bestMatch = this.findBestPluginNameMatch(pluginName, this.pluginDocUrlsCache);
+    if (bestMatch) {
+      console.log(`🔍 DOCS SITE: Using fuzzy match: ${pluginName} → ${bestMatch}`);
+      return this.pluginDocUrlsCache.get(bestMatch) || null;
+    }
+    
+    return null;
+  }
+  
+  /**
+   * Find the best matching plugin name from the available names
+   * Uses a simple similarity score based on common substrings
+   */
+  private findBestPluginNameMatch(queryName: string, urlMapping: Map<string, string>): string | null {
+    // Try exact match first
+    if (urlMapping.has(queryName)) {
+      console.log(`🔍 REGISTRY: Found exact match for ${queryName}`);
+      return queryName;
+    }
+    
+    // Remove @elizaos/ prefix if present for comparison
+    const normalizedQuery = queryName.replace(/^@elizaos\//, '');
+    
+    // Check if normalized version exists
+    if (urlMapping.has(normalizedQuery)) {
+      console.log(`🔍 REGISTRY: Found match for normalized name ${normalizedQuery}`);
+      return normalizedQuery;
+    }
+    
+    // Define possible variations based on the query
+    const possibleFormats: string[] = [queryName, normalizedQuery];
+    
+    // Handle adapter-* patterns
+    if (queryName.includes('adapter-') || queryName.includes('adapter/')) {
+      const baseName = normalizedQuery
+        .replace(/^adapter-/, '')
+        .replace(/^adapter\//, '');
+      
+      possibleFormats.push(`adapter-${baseName}`);
+      possibleFormats.push(`@elizaos/adapter-${baseName}`);
+      possibleFormats.push(`@elizaos/plugin-adapter-${baseName}`);
+      possibleFormats.push(`plugin-adapter-${baseName}`);
+      possibleFormats.push(baseName);
+    }
+    
+    // Handle client-* patterns
+    if (queryName.includes('client-') || queryName.includes('client/')) {
+      const baseName = normalizedQuery
+        .replace(/^client-/, '')
+        .replace(/^client\//, '');
+      
+      possibleFormats.push(`client-${baseName}`);
+      possibleFormats.push(`@elizaos/client-${baseName}`);
+      possibleFormats.push(`@elizaos/plugin-client-${baseName}`);
+      possibleFormats.push(`plugin-client-${baseName}`);
+      possibleFormats.push(baseName);
+    }
+    
+    // Handle plugin-* patterns
+    if (queryName.includes('plugin-') || queryName.includes('plugin/')) {
+      const baseName = normalizedQuery
+        .replace(/^plugin-/, '')
+        .replace(/^plugin\//, '');
+      
+      possibleFormats.push(`plugin-${baseName}`);
+      possibleFormats.push(`@elizaos/plugin-${baseName}`);
+      possibleFormats.push(baseName);
+    }
+    
+    console.log(`🔍 REGISTRY: Looking for plugin ${queryName} in possible formats: ${JSON.stringify(possibleFormats, null, 2)}`);
+    
+    // Check each possible format
+    for (const format of possibleFormats) {
+      if (urlMapping.has(format)) {
+        console.log(`🔍 REGISTRY: Found match with format: ${format}`);
+        return format;
+      }
+    }
+    
+    // If no direct match, try fuzzy matching
+    let bestMatch: string | null = null;
+    let bestScore = 0;
+    
+    for (const key of urlMapping.keys()) {
+      const score = this.calculateSimilarity(normalizedQuery, key);
+      if (score > bestScore && score > 0.7) { // Threshold for fuzzy matching
+        bestScore = score;
+        bestMatch = key;
+      }
+    }
+    
+    if (bestMatch) {
+      console.log(`🔍 REGISTRY: Found fuzzy match: ${bestMatch} (score: ${bestScore.toFixed(2)})`);
+      return bestMatch;
+    }
+    
+    console.log(`❌ REGISTRY: Plugin ${queryName} not found in registry`);
+    return null;
+  }
+  
+  /**
+   * Calculate similarity between two strings using Levenshtein distance
+   * @param a First string
+   * @param b Second string
+   * @returns Score between 0 and 1 where 1 is exact match
+   */
+  private calculateSimilarity(a: string, b: string): number {
+    if (a === b) return 1.0;
+    if (a.length === 0 || b.length === 0) return 0.0;
+    
+    // Normalize both strings
+    const strA = a.toLowerCase().replace(/^@elizaos\//, '');
+    const strB = b.toLowerCase().replace(/^@elizaos\//, '');
+    
+    // Simple substring check
+    if (strA.includes(strB)) return 0.9 * (strB.length / strA.length);
+    if (strB.includes(strA)) return 0.9 * (strA.length / strB.length);
+    
+    // Calculate Levenshtein distance
+    const matrix: number[][] = [];
+    
+    // Initialize matrix
+    for (let i = 0; i <= strA.length; i++) {
+      matrix[i] = [i];
+    }
+    
+    for (let j = 0; j <= strB.length; j++) {
+      matrix[0][j] = j;
+    }
+    
+    // Fill the matrix
+    for (let i = 1; i <= strA.length; i++) {
+      for (let j = 1; j <= strB.length; j++) {
+        const cost = strA[i - 1] === strB[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,      // deletion
+          matrix[i][j - 1] + 1,      // insertion
+          matrix[i - 1][j - 1] + cost // substitution
+        );
+      }
+    }
+    
+    // Calculate score (1 - normalized distance)
+    const distance = matrix[strA.length][strB.length];
+    const maxLength = Math.max(strA.length, strB.length);
+    
+    return 1 - (distance / maxLength);
+  }
+  
+  /**
+   * Fetch documentation from the elizaos.github.io website
+   */
+  private async fetchDocsWebsiteDocumentation(pluginName: string): Promise<DocResponse> {
+    console.log(`🌐 DOCS SITE: Fetching documentation for ${pluginName}`);
+    
+    try {
+      // Get the documentation URL for this plugin
+      const docUrl = await this.getPluginDocUrl(pluginName);
+      
+      if (!docUrl) {
+        console.error(`❌ DOCS SITE: No documentation URL found for ${pluginName}`);
+        throw new Error(`No documentation URL found for ${pluginName}`);
+      }
+      
+      console.log(`🌐 DOCS SITE: Attempting to fetch from ${docUrl}`);
+      
+      // Various URL formats to try
+      const urlsToTry = [
+        docUrl,                            // Base URL
+        `${docUrl}/`,                      // With trailing slash
+        `${docUrl}/index.html`,            // With index.html
+        `${docUrl}/README.md`,             // With README.md
+        `${docUrl}/docs/README.md`         // In docs folder
+      ];
+      
+      // Try each URL until we get a successful response
+      let response = null;
+      let successfulUrl = null;
+      
+      for (const url of urlsToTry) {
+        try {
+          console.log(`🌐 DOCS SITE: Trying URL: ${url}`);
+          response = await axios.get(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; RecallCLI/1.0)'
+            },
+            timeout: 10000 // 10 second timeout
+          });
+          
+          if (response.status === 200) {
+            successfulUrl = url;
+            console.log(`✅ DOCS SITE: Successfully fetched from ${url}`);
+            break;
+          }
+        } catch (urlError) {
+          console.log(`❌ DOCS SITE: Failed to fetch from ${url}: ${urlError instanceof Error ? urlError.message : String(urlError)}`);
+          // Continue to next URL
+        }
+      }
+      
+      if (!response || !successfulUrl) {
+        console.error(`❌ DOCS SITE: All URLs failed for ${pluginName}`);
+        throw new Error(`Failed to fetch documentation for ${pluginName} from any URL`);
+      }
+      
+      // Process the response based on content type
+      const contentType = response.headers['content-type'] || '';
+      
+      if (contentType.includes('text/html')) {
+        return this.processHtmlDocResponse(response, pluginName, successfulUrl);
+      } else if (contentType.includes('text/markdown') || contentType.includes('text/plain') || successfulUrl.endsWith('.md')) {
+        // Process markdown content
+        return {
+          content: response.data,
+          source: successfulUrl,
+          timestamp: Date.now()
+        };
+      } else {
+        console.error(`❌ DOCS SITE: Unexpected content type: ${contentType}`);
+        throw new Error(`Unexpected content type: ${contentType}`);
+      }
+    } catch (error) {
+      console.error(`❌ DOCS SITE: Error fetching from docs website: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Process HTML documentation response
+   */
+  private async processHtmlDocResponse(response: AxiosResponse, pluginName: string, url: string): Promise<DocResponse> {
+    // If we get HTML back, we need to extract the relevant content
+    if (response.headers['content-type']?.includes('text/html')) {
+      console.log('🌐 DOCS SITE: Processing HTML content...');
+      const $ = cheerio.load(response.data);
+      
+      // Try to find the README content
+      let content = '';
+      
+      // First, try to extract content from the main documentation area
+      // Since this is a documentation site, look for specific content areas
+      // Based on the screenshot, we should look for content within the main area
+      const mainContent = $('main').html();
+      if (mainContent) {
+        console.log('🌐 DOCS SITE: Found content in <main> tag');
+        content = mainContent;
+      } else {
+        // Try alternative selectors for content
+        const articleContent = $('article').html();
+        if (articleContent) {
+          console.log('🌐 DOCS SITE: Found content in <article> tag');
+          content = articleContent;
+        } else {
+          // Try to find a content div
+          const contentDiv = $('.content, #content, .documentation, #documentation').html();
+          if (contentDiv) {
+            console.log('🌐 DOCS SITE: Found content in content div');
+            content = contentDiv;
+          } else {
+            // Just grab the body as a last resort
+            console.log('🌐 DOCS SITE: Falling back to body content');
+            content = $('body').html() || response.data;
+          }
+        }
+      }
+      
+      // If content is still empty, try a different approach
+      if (!content) {
+        console.log('🌐 DOCS SITE: No content found with primary selectors, trying alternative extraction');
+        // Look for specific elements that might contain documentation
+        const features = $('.features');
+        if (features.length) {
+          console.log('🌐 DOCS SITE: Found features section');
+          content = features.html() || '';
+        }
+      }
+      
+      // Look for the README button and follow it if possible
+      const readmeLink = $('a.readme-button, a:contains("README"), a[href*="README"], a[href*="readme"]').attr('href');
+      if (readmeLink) {
+        console.log(`🌐 DOCS SITE: Found README button with link: ${readmeLink}`);
+        try {
+          // Try to get the README content directly
+          const readmeUrl = new URL(readmeLink, url).toString();
+          console.log(`🌐 DOCS SITE: Following README link to: ${readmeUrl}`);
+          
+          const readmeResponse = await axios.get(readmeUrl);
+          content = readmeResponse.data;
+          console.log(`🌐 DOCS SITE: Successfully fetched README content (${content.length} bytes)`);
+        } catch (readmeErr) {
+          console.warn(`🌐 DOCS SITE: Failed to fetch README: ${readmeErr instanceof Error ? readmeErr.message : String(readmeErr)}`);
+          // Fall back to the main page content
+          content = $('main').html() || $('body').html() || response.data;
+          console.log(`🌐 DOCS SITE: Using main page content as fallback (${content.length} bytes)`);
+        }
+      } else {
+        // Just use the main content if no README link is found
+        console.log('🌐 DOCS SITE: No README button found, using main content');
+        content = $('main').html() || $('body').html() || response.data;
+        console.log(`🌐 DOCS SITE: Extracted content length: ${content ? content.length : 0} bytes`);
+      }
+      
+      // Normalize the plugin name
+      const normalizedName = pluginName.startsWith('@') 
+        ? pluginName.split('/')[1] 
+        : pluginName;
+      
+      // Extract plugin metadata if available
+      const name = $('h1').first().text() || normalizedName;
+      
+      console.log(`🌐 DOCS SITE: Successfully extracted documentation for ${name}`);
+      return {
+        content: this.cleanText(content),
+        source: `docs:${pluginName}`,
+        timestamp: Date.now(),
+        metadata: {
+          name: normalizedName,
+          description: `Plugin documentation for ${normalizedName}`,
+          url: url,
+          category: 'plugins'
+        }
+      };
+    } else {
+      // Just return the raw content if it's not HTML
+      console.log('🌐 DOCS SITE: Received non-HTML content, using as-is');
+      
+      // Normalize the plugin name
+      const normalizedName = pluginName.startsWith('@') 
+        ? pluginName.split('/')[1] 
+        : pluginName;
+      
+      return {
+        content: response.data,
+        source: `docs:${pluginName}`,
+        timestamp: Date.now(),
+        metadata: {
+          name: normalizedName,
+          url: url
+        }
+      };
+    }
+  }
+  
+  /**
    * Handle incoming HTTP requests
    */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1833,6 +2555,7 @@ const item: ${exp.name} = {
       }
     } else if (url.pathname === '/documentation' && req.method === 'POST') {
       // Handle POST request with full DocRequest body
+      console.log('📝 SERVER: Received POST request to /documentation endpoint');
       let body = '';
       
       req.on('data', (chunk) => {
@@ -1841,36 +2564,148 @@ const item: ${exp.name} = {
       
       req.on('end', async () => {
         try {
+          console.log(`📝 SERVER: Processing POST body: ${body}`);
           const request = JSON.parse(body) as DocRequest;
           
           // Validate request
           if (!request.type || !request.query) {
+            console.log('📝 SERVER: Invalid request - missing type or query');
             res.statusCode = 400;
             res.end(JSON.stringify({ error: 'Invalid request: missing type or query' }));
             return;
           }
           
-          const documentation = await this.getDocumentation(request);
+          console.log(`📝 SERVER: Valid request, fetching documentation for ${request.type} - ${request.query}`);
           
+          try {
+            const documentation = await this.getDocumentation(request);
+            
+            console.log('📝 SERVER: Documentation fetched successfully, sending response');
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            res.end(JSON.stringify(documentation));
+          } catch (docError) {
+            console.error(`📝 SERVER: Error fetching documentation: ${docError instanceof Error ? docError.message : String(docError)}`);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ 
+              error: `Failed to fetch documentation: ${docError instanceof Error ? docError.message : String(docError)}` 
+            }));
+          }
+        } catch (parseError) {
+          console.error(`📝 SERVER: Error parsing request body: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Invalid JSON in request body' }));
+        }
+      });
+    } else if (url.pathname === '/query' && req.method === 'POST') {
+      // Special endpoint for our test command
+      console.log('📝 SERVER: Received POST request to /query endpoint (testing)');
+      let body = '';
+      
+      req.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', async () => {
+        try {
+          console.log(`📝 SERVER: Processing test query: ${body}`);
+          const request = JSON.parse(body);
+          
+          if (!request.type || !request.query) {
+            console.log('📝 SERVER: Invalid test request');
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Invalid request' }));
+            return;
+          }
+          
+          console.log(`📝 SERVER: Processing test request for ${request.type} - ${request.query}`);
+          let documentation;
+          
+          // Special case for testing - always generate fallback doc for specific flag
+          if (request.params?.useFallback === 'true') {
+            console.log('📝 SERVER: Using fallback documentation as requested');
+            documentation = await this.generateFallbackPluginDocumentation(request.query);
+          } else {
+            try {
+              documentation = await this.getDocumentation({
+                type: request.type,
+                query: request.query,
+                params: request.params
+              });
+            } catch (error) {
+              console.log('📝 SERVER: Error in test request, using fallback');
+              documentation = await this.generateFallbackPluginDocumentation(request.query);
+            }
+          }
+          
+          console.log('📝 SERVER: Test documentation generated, sending response');
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 200;
           res.end(JSON.stringify(documentation));
-        } catch (error) {
+        } catch (parseError) {
+          console.error(`📝 SERVER: Error in test query: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
           res.statusCode = 500;
-          res.end(JSON.stringify({ 
-            error: `Failed to fetch documentation: ${error instanceof Error ? error.message : String(error)}` 
-          }));
+          res.end(JSON.stringify({ error: 'Test query failed' }));
         }
       });
     } else if (url.pathname === '/plugins') {
       // List available plugins
       try {
-        const plugins = await this.pluginRegistry.getPlugins();
+        // Get raw registry data directly
+        const registryUrl = this.options.pluginRegistryUrl || 'https://raw.githubusercontent.com/elizaos/registry/main/index.json';
+        const plugins: Record<string, any> = {};
         
+        // Fetch data from registry URL
+        try {
+          console.log(`MCP Server: Fetching plugins from ${registryUrl}`);
+          const response = await axios.get(registryUrl);
+          const registryData = response.data;
+          
+          // If we got a simple key-value mapping (like what we see in the browser)
+          if (registryData && typeof registryData === 'object') {
+            console.log(`MCP Server: Processing ${Object.keys(registryData).length} plugins from registry`);
+            
+            // Transform the simple key-value mapping into our expected structure
+            for (const [packageName, repoUrl] of Object.entries(registryData)) {
+              // Extract plugin name from package name
+              const pluginName = this.extractPluginNameFromPackage(packageName);
+              const repoString = String(repoUrl);
+              
+              // Extract repo path from the github URL value
+              const repoMatches = repoString.match(/github:(.+)/);
+              if (!repoMatches) continue;
+              
+              const repoPath = repoMatches[1];
+              const pluginClassName = pluginName.replace(/-./g, x => x[1].toUpperCase());
+              
+              // Create a valid PluginInfo object
+              plugins[pluginName] = {
+                name: pluginName,
+                description: `Plugin for ${pluginName.replace(/-/g, ' ')}`,
+                version: '1.0.0', // Default version
+                author: 'Eliza Team',
+                license: 'MIT',
+                repository: `https://github.com/${repoPath}`,
+                dependencies: {},
+                requiredEnv: [],
+                documentation: `https://github.com/${repoPath}#readme`,
+                importStatement: `import { ${this.capitalizeFirstLetter(pluginClassName)} } from '@elizaos/${pluginName}';`
+              };
+            }
+          } else {
+            throw new Error('Unexpected registry data format');
+          }
+        } catch (error) {
+          console.error(`MCP Server: Failed to fetch from registry: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }
+        
+        // Send the processed plugins
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ plugins }));
       } catch (error) {
+        console.error(`MCP Server plugin endpoint error: ${error}`);
         res.statusCode = 500;
         res.end(JSON.stringify({ 
           error: `Failed to list plugins: ${error instanceof Error ? error.message : String(error)}` 
@@ -1975,4 +2810,30 @@ const item: ${exp.name} = {
       res.end(JSON.stringify({ error: 'Not found' }));
     }
   }
+
+  /**
+   * Capitalize the first letter of a string
+   */
+  private capitalizeFirstLetter(string: string): string {
+    if (!string) return '';
+    return string.charAt(0).toUpperCase() + string.slice(1);
+  }
+
+  private extractPluginNameFromPackage(packageName: string): string {
+    // Handle both formats: @elizaos/plugin-name and plugin-name
+    const matches = packageName.match(/@elizaos\/(.+)/);
+    if (matches && matches[1]) {
+      return matches[1];
+    }
+    return packageName;
+  }
 } 
+
+/**
+ * Start an MCP server with the given options and return the server instance
+ */
+export async function startMcpServer(options: Partial<McpServerOptions> = {}): Promise<McpServer> {
+  const server = new McpServer(options);
+  await server.start();
+  return server;
+}

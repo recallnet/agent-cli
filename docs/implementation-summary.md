@@ -7,6 +7,7 @@
 - ✅ Command structure for all main features
 - ✅ Help documentation and examples
 - ✅ Project initialization and configuration
+- ✅ Unified workflow with all-in-one 'start' command
 
 ### 2. LLM Integration System
 - ✅ Abstraction layer for multiple LLM providers
@@ -30,6 +31,7 @@
 - ✅ Character file generation with LLM assistance
 - ✅ Strategy generation with templates
 - ✅ Agent execution capabilities
+- ✅ Streamlined setup workflow with LLM guidance
 
 ## In Progress Components
 
