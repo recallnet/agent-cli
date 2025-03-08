@@ -801,4 +801,97 @@ async function exampleUsage() {
       throw new Error(`MCP client document stats error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  /**
+   * Perform a direct vector search for documentation
+   * @param query The search query
+   * @param limit Maximum number of results to return
+   * @param threshold Similarity threshold (0-1)
+   */
+  async rawVectorSearch(query: string, limit: number = 5, threshold: number = 0.7): Promise<any> {
+    try {
+      const response = await axios.get(`${this.options.baseUrl}/vector-search`, {
+        params: {
+          query,
+          limit,
+          threshold
+        },
+        timeout: this.options.timeout
+      });
+      
+      return response.data;
+    } catch (error) {
+      console.error('Error performing vector search:', error);
+      throw new Error(`Failed to perform vector search: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Perform a combined search (keyword + vector) for documentation
+   * @param query The search query
+   * @param limit Maximum number of results to return
+   */
+  async combinedSearch(query: string, limit: number = 5): Promise<any> {
+    try {
+      const response = await axios.get(`${this.options.baseUrl}/combined-search`, {
+        params: {
+          query,
+          limit
+        },
+        timeout: this.options.timeout
+      });
+      
+      return response.data;
+    } catch (error) {
+      console.error('Error performing combined search:', error);
+      throw new Error(`Failed to perform combined search: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Generate embeddings for a document
+   * @param documentId The ID of the document to generate embeddings for
+   */
+  async generateEmbeddings(documentId: string | number): Promise<any> {
+    try {
+      const response = await axios.post(
+        `${this.options.baseUrl}/generate-embeddings/${documentId}`,
+        {},
+        { timeout: this.options.timeout }
+      );
+      
+      return response.data;
+    } catch (error) {
+      console.error('Error generating embeddings:', error);
+      throw new Error(`Failed to generate embeddings: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Store a document with optional embedding generation
+   * @param metadata Document metadata
+   * @param content Document content
+   * @param generateEmbeddings Whether to generate embeddings for the document
+   */
+  async storeDocumentWithEmbeddings(
+    metadata: any,
+    content: string,
+    generateEmbeddings: boolean = true
+  ): Promise<any> {
+    try {
+      const response = await axios.post(
+        `${this.options.baseUrl}/store-document`,
+        { metadata, content },
+        {
+          params: { embeddings: generateEmbeddings.toString() },
+          timeout: this.options.timeout
+        }
+      );
+      
+      return response.data;
+    } catch (error) {
+      console.error('Error storing document with embeddings:', error);
+      throw new Error(`Failed to store document: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 } 

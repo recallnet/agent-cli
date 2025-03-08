@@ -18,6 +18,9 @@ import { setupCommand } from './lib/cli/setup.js';
 import { startCommand } from './lib/cli/start.js';
 import { getDataPath } from './lib/utils/config-paths.js';
 
+// Import the EmbeddingService
+import { EmbeddingService } from './lib/mcp/embedding-service.js';
+
 // Initialize environment variables
 config();
 
@@ -79,7 +82,8 @@ program
       port: options.port ? Number(options.port) : undefined,
       documentStore: {
         dbPath: getDataPath('db', 'documentation.db')
-      }
+      },
+      embeddingService: new EmbeddingService()
     });
     
     if (options.start) {
@@ -120,19 +124,19 @@ program
     console.log('🧪 Starting MCP documentation test');
     
     // Start MCP server
-    const port = 3335;
-    await startMcpServer({ 
-      port, 
+    await startMcpServer({
+      port: 3335,
       cacheTtl: 0, // Use cacheTtl 0 to force fresh data
       documentStore: {
         dbPath: getDataPath('db', 'documentation.db')
-      }
+      },
+      embeddingService: new EmbeddingService()
     });
-    console.log(`🧪 MCP server started on port ${port}`);
+    console.log('🧪 MCP server started on port 3335');
     
     // Create client
     const mcp = new McpClient({
-      baseUrl: `http://localhost:${port}`
+      baseUrl: 'http://localhost:3335'
     });
     
     try {
@@ -161,9 +165,15 @@ program
     console.log('🧪 Starting MCP fallback documentation test');
     
     // Start MCP server
-    const port = 3100;
-    await startMcpServer({ port, cacheTtl: 0 }); // Use cacheTtl 0 to force fresh data
-    console.log(`🧪 MCP server started on port ${port}`);
+    await startMcpServer({
+      port: 3100,
+      cacheTtl: 0, // Use cacheTtl 0 to force fresh data
+      documentStore: {
+        dbPath: getDataPath('db', 'documentation.db')
+      },
+      embeddingService: new EmbeddingService()
+    });
+    console.log('🧪 MCP server started on port 3100');
     
     try {
       // Wait for the server to be ready (small delay)
@@ -171,7 +181,7 @@ program
       
       // Direct fallback test
       console.log(`🧪 TEST: Fetching fallback documentation for plugin ${pluginName}`);
-      const response = await axios.post(`http://localhost:${port}/query`, {
+      const response = await axios.post('http://localhost:3100/query', {
         type: 'plugin',
         query: pluginName,
         params: {

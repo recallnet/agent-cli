@@ -27,6 +27,7 @@ export interface McpServerOptions {
   documentStore?: {
     dbPath: string;  // Custom path for the SQLite database
   };
+  embeddingService?: any; // Embedding service for vector search
 }
 
 /**
@@ -138,29 +139,34 @@ export class McpServer extends EventEmitter {
   
   constructor(options: Partial<McpServerOptions> = {}) {
     super();
-    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
-    console.log('!!!      USING UPDATED MCP SERVER WITH DOCS SITE       !!!');
-    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
     
+    // Set default options
     this.options = {
-      port: options.port || parseInt(process.env.MCP_PORT || '3333', 10),
-      cacheTtl: options.cacheTtl || parseInt(process.env.CACHE_TTL || '3600000', 10), // Default 1 hour
-      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL || 'https://raw.githubusercontent.com/elizaos/registry/main/index.json',
-      docsBasePath: options.docsBasePath || process.env.DOCS_BASE_PATH || path.join(process.cwd(), 'docs'),
+      port: options.port || Number(process.env.MCP_PORT) || 3333,
+      cacheTtl: options.cacheTtl !== undefined ? options.cacheTtl : 3600000, // 1 hour default
+      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL,
+      docsBasePath: options.docsBasePath || process.env.MCP_DOCS_PATH,
       githubApiToken: options.githubApiToken || process.env.GITHUB_API_TOKEN,
-      maxFileSizeBytes: options.maxFileSizeBytes || parseInt(process.env.MAX_FILE_SIZE_BYTES || '1000000', 10), // Default 1MB
-      maxRepositoryFiles: options.maxRepositoryFiles || parseInt(process.env.MAX_REPOSITORY_FILES || '100', 10) // Default 100 files
+      maxFileSizeBytes: options.maxFileSizeBytes || 1024 * 1024, // 1MB default
+      maxRepositoryFiles: options.maxRepositoryFiles || 100, // 100 files default
+      documentStore: options.documentStore
     };
     
     // Initialize plugin registry
     this.pluginRegistry = new PluginRegistry(this.options.pluginRegistryUrl);
     
-    // Initialize document store with custom path if provided
-    const documentStorePath = this.options.documentStore?.dbPath || getDataPath('docs', 'documentation.db');
-    this.documentStore = new DocumentStore(documentStorePath);
+    // Initialize document store
+    const dbPath = this.options.documentStore?.dbPath || getDataPath('mcp-docs.db');
+    this.documentStore = new DocumentStore(dbPath, options.embeddingService);
     
+    // Initialize text embeddings
     this.textEmbeddings = new TextEmbeddings();
+    
+    // Initialize document chunker
     this.documentChunker = new DocumentChunker();
+    
+    console.log(chalk.blue(`📝 MCP server initialized with cache TTL: ${this.options.cacheTtl}ms`));
+    console.log(chalk.blue(`📝 MCP document store at: ${dbPath}`));
   }
   
   /**
@@ -1726,7 +1732,7 @@ ${codeDocumentation ? `## Code Documentation\n\n${codeDocumentation}` : ''}
   /**
    * Generate repository summary
    */
-  private generateRepositorySummary(repoPath: string, fileStructure: Record<string, any>, packageJson: any): string {
+  private generateRepositorySummary(_repoPath: string, fileStructure: Record<string, any>, packageJson: any): string {
     const countFilesByType = (structure: Record<string, any>) => {
       const counts: Record<string, number> = {};
       
@@ -2250,7 +2256,7 @@ const item: ${exp.name} = {
         
         // Process subdirectories first to ensure they're done
         const subDirs: Array<{url: string, type: string}> = [];
-        links.each((i, link) => {
+        links.each((_i, link) => {
           const href = $(link).attr('href');
           if (href === 'adapters/' || href === 'clients/') {
             subDirs.push({ url: packagesBaseUrl + href, type: href.replace('/', '') });
@@ -2269,7 +2275,7 @@ const item: ${exp.name} = {
         await Promise.all(subDirPromises);
         
         // Add direct plugin URLs 
-        links.each((i, link) => {
+        links.each((_i, link) => {
           const href = $(link).attr('href');
           
           if (href && href !== '../' && href !== './') {
@@ -2388,7 +2394,7 @@ const item: ${exp.name} = {
           console.log(response.data.substring(0, 500) + '...');
         }
         
-        links.each((i, link) => {
+        links.each((_i, link) => {
           const href = $(link).attr('href');
           
           if (href && !href.startsWith('..') && !href.startsWith('./') && href !== './') {
@@ -2913,10 +2919,9 @@ const item: ${exp.name} = {
         res.statusCode = 200;
         res.end(JSON.stringify(documentation));
       } catch (error) {
+        console.error('Error getting documentation:', error);
         res.statusCode = 500;
-        res.end(JSON.stringify({ 
-          error: `Failed to fetch documentation: ${error instanceof Error ? error.message : String(error)}` 
-        }));
+        res.end(JSON.stringify({ error: 'Error getting documentation' }));
       }
     } else if (url.pathname === '/documentation' && req.method === 'POST') {
       // Handle POST request with full DocRequest body
@@ -3452,6 +3457,111 @@ const item: ${exp.name} = {
       // Health check endpoint
       res.statusCode = 200;
       res.end(JSON.stringify({ status: 'ok' }));
+    } else if (url.pathname === '/vector-search' && req.method === 'GET') {
+      const query = url.searchParams.get('query') || '';
+      const limitParam = url.searchParams.get('limit') || '5';
+      const thresholdParam = url.searchParams.get('threshold') || '0.7';
+      
+      // Parse numeric parameters
+      const limit = parseInt(limitParam, 10);
+      const threshold = parseFloat(thresholdParam);
+      
+      if (!query) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'Query parameter is required' }));
+        return;
+      }
+      
+      try {
+        console.log(`Performing vector search for query: "${query}" with limit ${limit} and threshold ${threshold}`);
+        const results = await this.documentStore.vectorSearch(query, limit, threshold);
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify(results));
+      } catch (error) {
+        console.error('Error performing vector search:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'Error performing vector search' }));
+      }
+    } else if (url.pathname === '/combined-search' && req.method === 'GET') {
+      const query = url.searchParams.get('query') || '';
+      const limitParam = url.searchParams.get('limit') || '5';
+      const limit = parseInt(limitParam, 10);
+      
+      if (!query) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'Query parameter is required' }));
+        return;
+      }
+      
+      try {
+        console.log(`Performing combined search for query: "${query}" with limit ${limit}`);
+        const results = await this.documentStore.combinedSearch(query, limit);
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify(results));
+      } catch (error) {
+        console.error('Error performing combined search:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'Error performing combined search' }));
+      }
+    } else if (url.pathname.startsWith('/generate-embeddings/') && req.method === 'POST') {
+      const documentId = url.pathname.substring('/generate-embeddings/'.length);
+      
+      if (!documentId) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'Document ID is required' }));
+        return;
+      }
+      
+      try {
+        console.log(`Generating embeddings for document: ${documentId}`);
+        await this.documentStore.generateEmbeddingsForDocument(Number(documentId));
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, message: 'Embeddings generated successfully' }));
+      } catch (error) {
+        console.error('Error generating embeddings:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'Error generating embeddings' }));
+      }
+    } else if (url.pathname === '/store-document' && req.method === 'POST') {
+      // Read the request body
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      
+      req.on('end', async () => {
+        try {
+          const data = JSON.parse(body);
+          const generateEmbeddings = url.searchParams.get('embeddings') === 'true';
+          
+          if (!data.metadata || !data.content) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Document metadata and content are required' }));
+            return;
+          }
+          
+          console.log(`Storing document with title: "${data.metadata.title}" (generateEmbeddings=${generateEmbeddings})`);
+          const id = await this.documentStore.storeDocumentWithEmbeddings(
+            data.metadata,
+            data.content,
+            generateEmbeddings
+          );
+          
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ id, success: true }));
+        } catch (error) {
+          console.error('Error storing document:', error);
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: 'Error storing document' }));
+        }
+      });
     } else {
       // Not found
       res.statusCode = 404;
@@ -3479,36 +3589,21 @@ const item: ${exp.name} = {
   /**
    * Generate embeddings for a document's chunks in the background
    * @param documentId The document ID
-   * @param chunks Array of text chunks
+   * @param _chunks Array of text chunks
    */
-  private async generateEmbeddingsForDocument(documentId: number, chunks: string[]): Promise<void> {
-    console.log(`📝 SERVER: Generating embeddings for document ${documentId} (${chunks.length} chunks)`);
-    
+  private async generateEmbeddingsForDocument(documentId: number, _chunks: string[]): Promise<void> {
     try {
-      // Process each chunk
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        
-        // Generate embedding
-        const embedding = await this.textEmbeddings.generateEmbedding(chunk);
-        
-        // Store in database
-        const embeddingId = this.documentStore.storeEmbedding(documentId, i, embedding);
-        console.log(`Generated and stored embedding ${embeddingId} with ${embedding.size} dimensions`);
-        
-        // Log progress periodically
-        if (i % 10 === 0 || i === chunks.length - 1) {
-          console.log(`📝 SERVER: Generated embeddings for ${i + 1}/${chunks.length} chunks of document ${documentId}`);
-        }
-      }
-      
-      console.log(`📝 SERVER: Completed generating embeddings for document ${documentId}`);
-    } catch (error: unknown) {
-      console.error(`📝 SERVER: Error generating embeddings: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
+      await this.documentStore.generateEmbeddingsForDocument(Number(documentId));
+    } catch (error) {
+      console.error(`Failed to generate embeddings for document ${documentId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-} 
+
+  /**
+   * Generate embeddings for a document
+   * @param documentId The document ID
+   */
+}
 
 /**
  * Start an MCP server with the given options and return the server instance
