@@ -4,73 +4,107 @@ import ora from 'ora';
 import path from 'path';
 import fs from 'fs';
 import * as simpleGit from 'simple-git';
-
-// Import utilities
-import { validateEnvironment } from '../utils/validation.js';
-import { configureEnvironment } from '../utils/config.js';
+import { LlmProviderFactory } from '../llm/provider.js';
+import { McpClient } from '../mcp/client.js';
+import { AgentSetup } from '../agent/setup.js';
 
 /**
  * Initialize a new crypto trading agent project
- * @param projectName Name for the new project
- * @param options Command options
  */
-export async function initializeProject(projectName: string, options: any) {
-  const spinner = ora('Initializing new crypto trading agent project').start();
+export async function initializeProject(name: string, options: { force?: boolean, template?: string, competition?: string, interactive?: boolean } = {}) {
+  const spinner = ora('Initializing project').start();
   
   try {
-    // Create project directory
-    const projectPath = path.resolve(process.cwd(), projectName);
+    const projectDir = path.resolve(process.cwd(), name);
     
     // Check if directory already exists
-    if (fs.existsSync(projectPath)) {
+    if (fs.existsSync(projectDir)) {
       if (!options.force) {
-        spinner.fail(`Directory ${chalk.cyan(projectName)} already exists. Use --force to overwrite.`);
+        spinner.fail(`Directory ${chalk.cyan(name)} already exists, use --force to overwrite`);
         return;
       }
-      spinner.info(`Directory ${chalk.cyan(projectName)} already exists. Using --force to continue.`);
-    } else {
-      fs.mkdirSync(projectPath, { recursive: true });
+      spinner.info(`Directory ${chalk.cyan(name)} exists, continuing with force option`);
     }
-
-    // Switch to project directory
-    process.chdir(projectPath);
     
-    // Clone Recall Agent Starter Kit
-    spinner.text = 'Cloning Recall Agent Starter Kit';
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+    
+    spinner.text = `Cloning Recall Agent Starter Kit to ${chalk.cyan(name)}`;
+    
+    // Clone starter kit with simple-git
     const git = simpleGit.simpleGit();
-    await git.clone('https://github.com/recallnet/recall-agent-starter', '.');
+    await git.clone('https://github.com/eliza-ai/recall-agent-starter-kit.git', projectDir, ['--depth', '1']);
     
-    // Validate environment
-    spinner.text = 'Validating environment';
-    await validateEnvironment();
+    // Remove .git directory
+    fs.rmSync(path.join(projectDir, '.git'), { recursive: true, force: true });
     
-    // Configure environment
-    spinner.text = 'Configuring environment';
-    await configureEnvironment(options);
+    // Update package.json with project name
+    const packageJsonPath = path.join(projectDir, 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    packageJson.name = name.toLowerCase().replace(/\s+/g, '-');
+    fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
     
-    // Success
-    spinner.succeed(`Successfully initialized project ${chalk.green(projectName)}`);
-    console.log(`\nNext steps:
-    1. cd ${projectName}
-    2. recall-cli llm set-key
-    3. recall-cli plugin list
-    4. recall-cli agent create`);
+    spinner.succeed(`Project initialized in ${chalk.cyan(name)}`);
     
+    // If interactive mode is enabled, launch the setup assistant
+    if (options.interactive) {
+      console.log(chalk.cyan('\nLaunching interactive setup assistant...\n'));
+      
+      // Create LLM provider and MCP client for the setup
+      try {
+        const llmProvider = LlmProviderFactory.createFromConfig();
+        if (!llmProvider) {
+          console.log(chalk.yellow('No LLM provider configured. Running in limited mode.'));
+          console.log(chalk.yellow('To configure an LLM provider, run:'));
+          console.log(chalk.yellow('  recall-cli llm config --provider openai --api-key your-api-key'));
+          return;
+        }
+        
+        const mcpClient = new McpClient();
+        
+        // Create and start the setup assistant
+        const setup = new AgentSetup(llmProvider, mcpClient, projectDir);
+        await setup.start();
+        
+        console.log(chalk.green('\n✅ Setup completed successfully!'));
+        console.log(chalk.cyan('\nNext steps:'));
+        console.log(chalk.white(`1. cd ${name}`));
+        console.log(chalk.white('2. pnpm install'));
+        console.log(chalk.white('3. pnpm start'));
+      } catch (error) {
+        console.error(chalk.red(`Setup failed: ${error instanceof Error ? error.message : String(error)}`));
+        console.log(chalk.yellow('\nYou can still use the project manually.'));
+      }
+    } else {
+      // Display basic next steps
+      console.log(chalk.cyan('\nNext steps:'));
+      console.log(chalk.white(`1. cd ${name}`));
+      console.log(chalk.white('2. pnpm install'));
+      console.log(chalk.white('3. Edit configuration in config.js'));
+      console.log(chalk.white('4. pnpm start'));
+      console.log();
+      console.log(chalk.cyan('Tip:'), chalk.white('Run with --interactive flag for a guided setup experience.'));
+    }
   } catch (error) {
     spinner.fail(`Failed to initialize project: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 /**
- * Register the init command with the CLI
+ * Register the init command
  */
 export function initCommand(program: Command) {
   program
     .command('init')
+    .argument('<name>', 'Name of the project')
+    .option('--force', 'Overwrite existing directory')
+    .option('--template <template>', 'Template to use (default: basic)')
+    .option('--competition <url>', 'URL of competition guidelines')
+    .option('--interactive', 'Launch interactive setup assistant', false)
     .description('Initialize a new crypto trading agent project')
-    .argument('<project-name>', 'Name of the project to create')
-    .option('-f, --force', 'Force overwrite if project directory exists', false)
-    .option('--template <template>', 'Template to use (basic, advanced)', 'basic')
-    .option('--competition <url>', 'Competition specification URL')
-    .action(initializeProject);
+    .action((name, options) => {
+      initializeProject(name, options);
+    });
 } 

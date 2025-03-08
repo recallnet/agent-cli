@@ -13,6 +13,7 @@ import { agentCommand } from './lib/cli/agent.js';
 import { llmCommand } from './lib/cli/llm.js';
 import { McpServer } from './lib/mcp/server.js';
 import { strategyCommand } from './lib/cli/strategy.js';
+import { setupCommand } from './lib/cli/setup.js';
 
 // Initialize environment variables
 config();
@@ -39,6 +40,7 @@ registerPluginCommand(program);
 agentCommand(program);
 llmCommand(program);
 strategyCommand(program);
+setupCommand(program);
 
 // Add help information
 program.addHelpText('after', `
@@ -48,7 +50,7 @@ ${chalk.bold('Examples:')}
   $ recall-cli plugin recommend --interactive
   $ recall-cli strategy build
   $ recall-cli agent create --strategy momentum
-  $ recall-cli llm set-key --provider openai
+  $ recall-cli setup
 
 ${chalk.bold('Features:')}
   • Interactive strategy building with LLM assistance

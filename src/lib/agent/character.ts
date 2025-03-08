@@ -26,6 +26,17 @@ export interface Character {
 }
 
 /**
+ * Character configuration for agent setup
+ */
+export interface CharacterConfig {
+  name: string;
+  role: string;
+  description: string;
+  persona: string;
+  plugins: string[];
+}
+
+/**
  * Generate a character file for a crypto trading agent
  */
 export async function generateCharacter(options: {
@@ -48,119 +59,206 @@ export async function generateCharacter(options: {
     ],
     rules: [
       'Always analyze risk before suggesting a trade',
-      'Monitor market conditions continuously',
-      'Log all trading signals with confidence levels',
-      'Report potential issues or anomalies'
+      'Provide clear rationale for all trading decisions',
+      'Monitor positions and suggest adjustments when needed',
+      'Keep emotions out of trading decisions'
     ],
     goals: [
-      'Identify profitable trading opportunities',
-      'Minimize risk while maximizing returns',
-      'Adapt to changing market conditions',
-      'Continuously improve trading strategy'
+      'Generate consistent positive returns',
+      'Minimize drawdowns and manage risk',
+      'Identify high-probability trading opportunities',
+      'Continuously improve strategy performance'
     ],
-    clients: ['direct'],
+    clients: [],
     plugins: options.plugins
   };
-  
-  // If competition-based, add competition info
-  if (options.competitionBased) {
-    character.description = `A crypto trading agent optimized for competition performance, using the ${options.strategy} strategy`;
-    character.competition = {
-      name: 'Trading Competition',
-      rules: [
-        'Adhere to competition rules and guidelines',
-        'Optimize for the competition\'s scoring metrics',
-        'Stay within allowed position sizes and leverage limits',
-        'Respect trading frequency limitations'
-      ],
-      metrics: {
-        'totalReturn': 'Primary metric',
-        'sharpeRatio': 'Secondary metric',
-        'maxDrawdown': 'Risk control metric'
-      }
-    };
-    
-    // Add competition-specific goals and rules
-    character.goals.push('Maximize performance according to competition metrics');
-    character.goals.push('Outperform other competitors');
-    character.rules.push('Never exceed competition position size limits');
-    character.rules.push('Maintain trading frequency within competition guidelines');
-  }
-  
-  // If useAI is true, enhance the character using LLM
-  if (options.useAI) {
-    const provider = LlmProviderFactory.createFromConfig();
-    
-    if (provider) {
-      console.log(chalk.yellow('Using AI to enhance character...'));
-      
-      const prompt = `Create a character profile for a crypto trading agent with the following details:
-- Name: ${options.name}
-- Trading strategy: ${options.strategy}
-- Using plugins: ${options.plugins.join(', ')}
-${options.competitionBased ? '- Optimized for a trading competition' : ''}
 
-Enhance the following with more specific and detailed content related to crypto trading:
-- Instructions (what the agent does)
-- Characteristics (personality traits)
-- Rules (constraints to follow)
-- Goals (objectives to achieve)
-${options.competitionBased ? '- Competition-specific rules and performance metrics' : ''}
+  // If using AI and not competition-based, enhance with AI
+  if (options.useAI && !options.competitionBased) {
+    try {
+      const provider = LlmProviderFactory.createFromConfig();
+      if (provider) {
+        console.log(chalk.cyan('Enhancing character with AI...'));
+        
+        const prompt = `
+You are an expert in creating personas for crypto trading bots. Create an enhanced character file for a bot with the following information:
 
-Your response should be in JSON format, matching this structure:
-{
-  "instructions": "detailed instructions",
-  "characteristics": ["trait1", "trait2", "trait3", "trait4"],
-  "rules": ["rule1", "rule2", "rule3", "rule4"],
-  "goals": ["goal1", "goal2", "goal3", "goal4"]${options.competitionBased ? ',\n  "competition": {\n    "rules": ["comp-rule1", "comp-rule2"],\n    "metrics": {\n      "metric1": "description1",\n      "metric2": "description2"\n    }\n  }' : ''}
-}`;
-      
-      try {
-        const response = await provider.prompt(prompt, { temperature: 0.7 });
-        const enhancedCharacter = JSON.parse(response.content);
+Name: ${options.name}
+Strategy: ${options.strategy}
+Plugins: ${options.plugins.join(', ')}
+
+I need:
+1. A more detailed description (1-2 sentences)
+2. Specialized instructions that fit this trading strategy (2-3 sentences)
+3. Five distinctive characteristics that make this bot unique
+4. Five specific rules the bot should follow when making trading decisions
+5. Five clear goals the bot should aim to achieve
+
+Be specific to the strategy type and make it sound like a professional trading system. Format as JSON.`;
+
+        const response = await provider.prompt(prompt);
         
-        // Update character with AI enhancements
-        character.instructions = enhancedCharacter.instructions || character.instructions;
-        character.characteristics = enhancedCharacter.characteristics || character.characteristics;
-        character.rules = enhancedCharacter.rules || character.rules;
-        character.goals = enhancedCharacter.goals || character.goals;
-        
-        // Update competition information if available
-        if (options.competitionBased && enhancedCharacter.competition) {
-          character.competition = {
-            ...character.competition,
-            ...enhancedCharacter.competition,
-            rules: enhancedCharacter.competition.rules || character.competition?.rules,
-            metrics: enhancedCharacter.competition.metrics || character.competition?.metrics
-          };
+        try {
+          // Extract JSON from the response (find the first { and last })
+          const jsonStart = response.content.indexOf('{');
+          const jsonEnd = response.content.lastIndexOf('}') + 1;
+          
+          if (jsonStart >= 0 && jsonEnd > jsonStart) {
+            const jsonString = response.content.substring(jsonStart, jsonEnd);
+            const enhancedCharacter = JSON.parse(jsonString);
+            
+            // Merge with existing character (if valid properties are present)
+            if (enhancedCharacter.description) {
+              character.description = enhancedCharacter.description;
+            }
+            
+            if (enhancedCharacter.instructions) {
+              character.instructions = enhancedCharacter.instructions;
+            }
+            
+            if (enhancedCharacter.characteristics && Array.isArray(enhancedCharacter.characteristics) && enhancedCharacter.characteristics.length > 0) {
+              character.characteristics = enhancedCharacter.characteristics.slice(0, 5);
+            }
+            
+            if (enhancedCharacter.rules && Array.isArray(enhancedCharacter.rules) && enhancedCharacter.rules.length > 0) {
+              character.rules = enhancedCharacter.rules.slice(0, 5);
+            }
+            
+            if (enhancedCharacter.goals && Array.isArray(enhancedCharacter.goals) && enhancedCharacter.goals.length > 0) {
+              character.goals = enhancedCharacter.goals.slice(0, 5);
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to parse enhanced character: ${error instanceof Error ? error.message : String(error)}`);
         }
-      } catch (error) {
-        console.log(chalk.yellow(`AI enhancement failed: ${error instanceof Error ? error.message : String(error)}. Using default character.`));
       }
-    } else {
-      console.log(chalk.yellow('No LLM provider configured. Using default character.'));
+    } catch (error) {
+      console.warn(`Failed to enhance character with AI: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  
+
+  // Add competition-specific content if needed
+  if (options.competitionBased) {
+    character.competition = {
+      name: 'Crypto Trading Competition',
+      rules: [
+        'Follow all competition guidelines',
+        'Submit signals within the required timeframe',
+        'Trade only the allowed pairs'
+      ],
+      metrics: {
+        'Total Return': 'Primary performance metric',
+        'Sharpe Ratio': 'Risk-adjusted return metric',
+        'Max Drawdown': 'Risk metric to minimize',
+        'Win Rate': 'Percentage of profitable trades'
+      }
+    };
+  }
+
   return character;
 }
 
 /**
- * Save a character to a file
+ * Generate a character based on context from the interactive setup
+ * @param context Context information from the interactive setup
+ * @param llmProvider LLM provider for generating the character
+ * @returns Character configuration
  */
-export function saveCharacter(character: Character, projectPath: string): string {
-  // Create the characters directory if it doesn't exist
-  const charactersDir = path.join(projectPath, 'characters');
-  if (!fs.existsSync(charactersDir)) {
-    fs.mkdirSync(charactersDir, { recursive: true });
+export async function generateCharacterForSetup(context: string, llmProvider?: any): Promise<CharacterConfig> {
+  // Use provided LLM provider or create a new one
+  const provider = llmProvider || LlmProviderFactory.createFromConfig();
+  
+  if (!provider) {
+    throw new Error('Failed to create LLM provider. Please configure your LLM provider first.');
   }
   
-  // Generate a safe filename
-  const safeName = character.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-  const filename = path.join(charactersDir, `${safeName}.character.json`);
-  
-  // Write the character file
-  fs.writeFileSync(filename, JSON.stringify(character, null, 2));
-  
-  return filename;
+  const prompt = `
+Generate a trading agent character based on the following context:
+
+${context}
+
+Create a detailed persona for this trading agent that includes:
+1. A distinctive name that reflects the agent's purpose
+2. A clear role description (e.g., "Technical Analysis Specialist")
+3. A concise but informative description (2-3 sentences)
+4. A detailed persona description (3-5 paragraphs) that explains the agent's background, expertise, methodology, and philosophy toward trading
+
+The character should be engaging, distinctive, and aligned with the trading goals and strategy described.
+
+Format your response as JSON:
+{
+  "name": "Character Name",
+  "role": "Character Role",
+  "description": "Brief description of the character",
+  "persona": "Detailed persona description in multiple paragraphs"
+}
+`;
+
+  try {
+    const response = await provider.prompt(prompt);
+    
+    // Extract JSON from response
+    const jsonStart = response.content.indexOf('{');
+    const jsonEnd = response.content.lastIndexOf('}') + 1;
+    
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      const jsonString = response.content.substring(jsonStart, jsonEnd);
+      const character = JSON.parse(jsonString);
+      
+      // Add empty plugins array (will be populated later)
+      character.plugins = [];
+      
+      return character;
+    } else {
+      throw new Error('Failed to parse character from LLM response');
+    }
+  } catch (error) {
+    console.warn(`Failed to generate character: ${error instanceof Error ? error.message : String(error)}`);
+    
+    // Return default character
+    return {
+      name: 'TradingBot Alpha',
+      role: 'Crypto Trading Specialist',
+      description: 'An advanced trading agent specialized in crypto markets analysis and signal generation.',
+      persona: 'TradingBot Alpha is a meticulous and data-driven trading agent with expertise in technical analysis and market psychology. It prioritizes risk management while seeking optimal entry and exit points. The agent continuously analyzes market conditions across multiple timeframes to identify high-probability trading opportunities while maintaining a disciplined approach to capital preservation.',
+      plugins: []
+    };
+  }
+}
+
+/**
+ * Save generated character to a file
+ */
+export function saveCharacter(character: Character, projectPath: string): string {
+  try {
+    const projectRoot = path.resolve(projectPath);
+    const charactersDir = path.join(projectRoot, 'characters');
+    
+    // Create characters directory if it doesn't exist
+    if (!fs.existsSync(charactersDir)) {
+      fs.mkdirSync(charactersDir, { recursive: true });
+    }
+    
+    // Create a safe filename from character name
+    const safeName = character.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const filename = path.join(charactersDir, `${safeName}.json`);
+    
+    // Save character file
+    fs.writeFileSync(filename, JSON.stringify(character, null, 2));
+    
+    return filename;
+  } catch (error) {
+    throw new Error(`Failed to save character file: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Save character config to a file
+ * @param character Character configuration
+ * @param filePath Path to save the character file
+ * @returns Path to the saved file
+ */
+export async function saveCharacterConfig(character: CharacterConfig, filePath: string): Promise<string> {
+  fs.writeFileSync(filePath, JSON.stringify(character, null, 2));
+  return filePath;
 } 

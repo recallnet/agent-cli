@@ -1,519 +1,476 @@
 import chalk from 'chalk';
-import inquirer from 'inquirer';
-import { StrategyDescription, StrategyImplementation, StrategyType, getBaseStrategy, generateStrategyImplementation } from './generator.js';
-import { LlmProviderFactory } from '../llm/provider.js';
-import { McpServer } from '../mcp/server.js';
-import { McpClient } from '../mcp/client.js';
 import ora from 'ora';
+import inquirer from 'inquirer';
+import fs from 'fs';
+import path from 'path';
+
+import { LlmProviderFactory } from '../llm/provider.js';
+import { McpClient } from '../mcp/client.js';
+import { PluginRegistry } from '../plugins/registry.js';
 
 /**
- * Strategy conversation step
+ * Options for building a strategy interactively
  */
-export interface StrategyConversationStep {
-  id: string;
-  type: 'question' | 'feedback' | 'suggestion' | 'template';
-  content: string;
-  response?: string;
-  metadata?: Record<string, any>;
-  timestamp?: number;
-}
-
-/**
- * Strategy building session
- */
-export interface StrategyBuildingSession {
-  sessionId: string;
-  startedAt: number;
-  lastUpdatedAt: number;
-  steps: StrategyConversationStep[];
-  currentStrategy: StrategyDescription;
-  environmentSettings?: Record<string, any>;
-  starterKitParams?: Record<string, any>;
-}
-
-/**
- * Strategy builder options
- */
-export interface StrategyBuilderOptions {
-  initialStrategy?: StrategyDescription;
-  competitionData?: any;
-  outputFormat?: 'starter-kit' | 'standard';
-  environmentParams?: Record<string, any>;
-  interactive?: boolean;
+export interface InteractiveBuilderOptions {
+  outputFormat: 'standard' | 'json' | 'typescript';
+  interactive: boolean;
+  strategyName?: string;
+  description?: string;
+  timeframes?: string[];
+  indicators?: string[];
   targetPlugins?: string[];
+  outputDir?: string;
 }
 
 /**
- * Strategy builder result
+ * Result of the interactive builder
  */
-export interface StrategyBuilderResult {
-  strategy: StrategyDescription;
-  implementation: StrategyImplementation;
-  session: StrategyBuildingSession;
-  starterKitConfig?: Record<string, any>;
+export interface InteractiveBuilderResult {
+  strategy: {
+    name: string;
+    description: string;
+    timeframes: string[];
+    indicators: string[];
+    parameters: Record<string, any>;
+  };
+  implementation: string;
+  filePath?: string;
 }
 
 /**
  * Build a trading strategy interactively with LLM assistance
  */
-export async function buildStrategyInteractively(options: StrategyBuilderOptions = {}): Promise<StrategyBuilderResult> {
-  // Initialize the session
-  const session: StrategyBuildingSession = {
-    sessionId: `strategy-${Date.now()}`,
-    startedAt: Date.now(),
-    lastUpdatedAt: Date.now(),
-    steps: [],
-    currentStrategy: options.initialStrategy || getBaseStrategy(StrategyType.CUSTOM),
-    environmentSettings: options.environmentParams || {},
-    starterKitParams: {}
-  };
-
-  console.log(chalk.cyan('📊 Interactive Strategy Builder'));
-  console.log(chalk.gray('Let\'s create an optimized trading strategy with AI assistance.\n'));
-
-  // Start the MCP server for context
-  const spinner = ora('Starting MCP server...').start();
-  const mcpServer = new McpServer();
-  await mcpServer.start();
-
-  // Create MCP client
-  const mcpClient = new McpClient();
-
-  // Create LLM provider with MCP client
-  const llmProvider = LlmProviderFactory.createFromConfig(mcpClient);
-
-  if (!llmProvider) {
-    spinner.fail('No LLM provider configured. Please run `recall-cli llm setup` first.');
-    await mcpServer.stop();
-    throw new Error('No LLM provider configured');
-  }
-
-  spinner.succeed('Ready to build your strategy');
-
+export async function buildStrategyInteractively(options: InteractiveBuilderOptions): Promise<InteractiveBuilderResult> {
+  const spinner = ora();
+  
   try {
-    // Step 1: Get the basic strategy type
-    if (!options.initialStrategy) {
-      const strategyTypeAnswer = await inquirer.prompt([
-        {
-          type: 'list',
-          name: 'strategyType',
-          message: 'What type of trading strategy would you like to build?',
-          choices: [
-            { name: 'Momentum - Based on price trends', value: StrategyType.MOMENTUM },
-            { name: 'Mean Reversion - Based on price returning to average', value: StrategyType.MEAN_REVERSION },
-            { name: 'Arbitrage - Based on price differences across exchanges', value: StrategyType.ARBITRAGE },
-            { name: 'Custom - Define your own strategy', value: StrategyType.CUSTOM }
-          ]
-        }
-      ]);
-
-      // Record this step
-      session.steps.push({
-        id: 'strategy-type',
-        type: 'question',
-        content: 'What type of trading strategy would you like to build?',
-        response: strategyTypeAnswer.strategyType,
-        timestamp: Date.now()
-      });
-
-      // If custom, get description
-      if (strategyTypeAnswer.strategyType === StrategyType.CUSTOM) {
-        const customDescriptionAnswer = await inquirer.prompt([
-          {
-            type: 'editor',
-            name: 'customDescription',
-            message: 'Describe your custom strategy:',
-            default: 'A trading strategy that...'
+    // Create LLM provider and MCP client
+    spinner.start('Initializing strategy builder...');
+    const mcpClient = new McpClient();
+    const llmProvider = LlmProviderFactory.createFromConfig(mcpClient);
+    if (!llmProvider) {
+      throw new Error('Failed to create LLM provider. Please configure your LLM provider first.');
+    }
+    const pluginRegistry = new PluginRegistry();
+    spinner.succeed('Strategy builder initialized');
+    
+    // Get plugin documentation for relevant plugins
+    spinner.start('Fetching plugin documentation...');
+    const pluginDocs = [];
+    
+    if (options.targetPlugins && options.targetPlugins.length > 0) {
+      for (const pluginName of options.targetPlugins) {
+        try {
+          const pluginInfo = await pluginRegistry.getPlugin(pluginName);
+          if (pluginInfo) {
+            pluginDocs.push({
+              name: pluginName,
+              description: pluginInfo.description,
+              version: pluginInfo.version,
+              documentation: pluginInfo.documentation || 'No documentation available'
+            });
           }
-        ]);
-
-        // Record this step
-        session.steps.push({
-          id: 'custom-description',
-          type: 'question',
-          content: 'Describe your custom strategy:',
-          response: customDescriptionAnswer.customDescription,
-          timestamp: Date.now()
-        });
-
-        // Update the current strategy
-        session.currentStrategy = getBaseStrategy(
-          strategyTypeAnswer.strategyType, 
-          customDescriptionAnswer.customDescription
-        );
-      } else {
-        // Use the selected strategy type
-        session.currentStrategy = getBaseStrategy(strategyTypeAnswer.strategyType);
+        } catch (error) {
+          console.warn(`Failed to get documentation for plugin ${pluginName}`);
+        }
       }
     }
-
-    // Step 2: Get detailed parameters through a guided conversation
-    const currentStrategy = session.currentStrategy;
     
-    // Start the conversation with the LLM
-    spinner.start('Starting strategy refinement conversation...');
+    spinner.succeed(`Fetched documentation for ${pluginDocs.length} plugins`);
     
-    // Initial LLM prompt to begin the conversation
-    const initialPrompt = `You are an expert cryptocurrency trading strategy developer. You're helping me refine a trading strategy with the following initial parameters:
-
-Name: ${currentStrategy.name}
-Description: ${currentStrategy.description}
-Indicators: ${currentStrategy.indicators.join(', ')}
-Conditions: ${currentStrategy.conditions.join(', ')}
-Timeframes: ${currentStrategy.timeframes.join(', ')}
-Risk Parameters: ${Object.entries(currentStrategy.riskParameters).map(([k, v]) => `${k}: ${v}`).join(', ')}
-
-I'd like you to ask me a series of questions to help refine this strategy. For each question, provide:
-1. A clear, specific question about an aspect of the strategy
-2. Some context about why this aspect is important
-3. 2-3 example answers to guide my thinking
-
-Ask one question at a time. After each question, wait for my response before asking the next question.
-Start with the most important aspects first, like target markets, specific indicators, and risk parameters.
-
-Your first question:`;
-
-    const response = await llmProvider.prompt(initialPrompt);
-    spinner.succeed('Strategy conversation started');
+    // Define strategy base from options or interactive prompts
+    let strategy: InteractiveBuilderResult['strategy'];
     
-    // Record this step
-    session.steps.push({
-      id: 'llm-initial-question',
-      type: 'question',
-      content: response.content,
-      timestamp: Date.now()
-    });
-    
-    // Show the first question
-    console.log(chalk.cyan('\n🤔 ' + response.content));
-
-    // Start the conversation loop
-    let conversationActive = true;
-    let questionCount = 0;
-    const maxQuestions = 8; // Limit to prevent too long conversations
-    
-    while (conversationActive && questionCount < maxQuestions) {
-      // Get user response
-      const userAnswer = await inquirer.prompt([
+    if (options.interactive) {
+      console.log(chalk.cyan('\n📈 Interactive Strategy Builder\n'));
+      console.log(chalk.gray('Let\'s build your trading strategy step by step.\n'));
+      
+      // Get strategy name
+      const { strategyName } = await inquirer.prompt([
         {
           type: 'input',
-          name: 'response',
-          message: 'Your answer:',
-          validate: (input) => input.trim().length > 0 ? true : 'Please provide a response'
+          name: 'strategyName',
+          message: 'Enter a name for your trading strategy:',
+          default: options.strategyName || 'CustomTradingStrategy',
+          validate: (input) => input.trim().length > 0 ? true : 'Strategy name is required'
         }
       ]);
       
-      // Record user response
-      session.steps[session.steps.length - 1].response = userAnswer.response;
+      // Get strategy description
+      const { description } = await inquirer.prompt([
+        {
+          type: 'editor',
+          name: 'description',
+          message: 'Describe your trading strategy:',
+          default: options.description || 'A customized trading strategy for cryptocurrency markets.'
+        }
+      ]);
       
-      // Ask if user wants to continue
-      if (questionCount >= 2) {
-        const continueAnswer = await inquirer.prompt([
+      // Timeframes selection
+      const availableTimeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '6h', '12h', '1d', '3d', '1w', '1M'];
+      
+      const { timeframes } = await inquirer.prompt([
+        {
+          type: 'checkbox',
+          name: 'timeframes',
+          message: 'Select timeframes for your strategy:',
+          choices: availableTimeframes,
+          default: options.timeframes || ['1h', '4h', '1d'],
+          validate: (input) => input.length > 0 ? true : 'At least one timeframe is required'
+        }
+      ]);
+      
+      // Get indicators based on available plugins or let user input
+      let availableIndicators: string[] = [];
+      
+      if (pluginDocs.length > 0) {
+        // If we have plugin info, suggest indicators based on them
+        spinner.start('Analyzing available plugins for indicators...');
+        
+        const pluginContext = pluginDocs.map(plugin => 
+          `Plugin: ${plugin.name}\nDescription: ${plugin.description}\nDocumentation: ${plugin.documentation}`
+        ).join('\n\n');
+        
+        const indicatorPrompt = `
+Based on the following plugin documentation, identify relevant technical indicators that could be used in a trading strategy:
+
+${pluginContext}
+
+Extract a list of technical indicators from these plugins. 
+Only list indicators that are actually available in these plugins, don't make anything up.
+Format your response as a JSON array of strings: ["Indicator1", "Indicator2", ...]`;
+        
+        try {
+          const response = await llmProvider.prompt(indicatorPrompt);
+          
+          // Extract JSON array from response
+          const jsonStart = response.content.indexOf('[');
+          const jsonEnd = response.content.lastIndexOf(']') + 1;
+          
+          if (jsonStart >= 0 && jsonEnd > jsonStart) {
+            const jsonString = response.content.substring(jsonStart, jsonEnd);
+            const extractedIndicators = JSON.parse(jsonString);
+            
+            if (Array.isArray(extractedIndicators) && extractedIndicators.length > 0) {
+              availableIndicators = extractedIndicators;
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to extract indicators from plugins');
+        }
+        
+        spinner.succeed('Analyzed plugins for indicators');
+      }
+      
+      // If we couldn't get indicators from plugins, use a default set
+      if (availableIndicators.length === 0) {
+        availableIndicators = [
+          'RSI (Relative Strength Index)',
+          'MACD (Moving Average Convergence Divergence)',
+          'Bollinger Bands',
+          'Moving Average (Simple)',
+          'Moving Average (Exponential)',
+          'Stochastic Oscillator',
+          'Volume',
+          'ATR (Average True Range)',
+          'Ichimoku Cloud',
+          'OBV (On-Balance Volume)'
+        ];
+      }
+      
+      // Add option for custom indicator
+      availableIndicators.push('Custom (specify your own)');
+      
+      // Select indicators
+      const { selectedIndicators } = await inquirer.prompt([
+        {
+          type: 'checkbox',
+          name: 'selectedIndicators',
+          message: 'Select indicators for your strategy:',
+          choices: availableIndicators,
+          default: options.indicators || availableIndicators.slice(0, 3),
+          validate: (input) => input.length > 0 ? true : 'At least one indicator is required',
+          pageSize: 15
+        }
+      ]);
+      
+      // Handle custom indicators
+      let finalIndicators = [...selectedIndicators];
+      
+      if (selectedIndicators.includes('Custom (specify your own)')) {
+        const { customIndicators } = await inquirer.prompt([
           {
-            type: 'confirm',
-            name: 'continue',
-            message: 'Would you like more questions to refine your strategy?',
-            default: questionCount < 5 // Default to yes for first few questions
+            type: 'input',
+            name: 'customIndicators',
+            message: 'Enter your custom indicators (comma-separated):',
+            validate: (input) => input.trim().length > 0 ? true : 'At least one custom indicator is required'
           }
         ]);
         
-        if (!continueAnswer.continue) {
-          conversationActive = false;
-          break;
-        }
+        // Remove the "Custom" option and add the actual custom indicators
+        finalIndicators = finalIndicators.filter(i => i !== 'Custom (specify your own)');
+        finalIndicators = [...finalIndicators, ...customIndicators.split(',').map((i: string) => i.trim())];
       }
       
-      questionCount++;
+      // Store the strategy base
+      strategy = {
+        name: strategyName,
+        description,
+        timeframes,
+        indicators: finalIndicators,
+        parameters: {} // Will be populated later
+      };
       
-      // Generate next question based on conversation history
-      spinner.start('Processing your response...');
+      // Get strategy parameters based on the selected indicators
+      console.log(chalk.cyan('\nDefining Strategy Parameters'));
       
-      // Create the conversation history for the LLM
-      const conversationHistory = session.steps
-        .filter(step => step.type === 'question')
-        .map(step => `Q: ${step.content}\nA: ${step.response || '[No response yet]'}`)
-        .join('\n\n');
+      spinner.start('Generating parameters based on your selections...');
       
-      const nextQuestionPrompt = `Based on our conversation so far about refining the trading strategy:
+      const paramPrompt = `
+Create parameters for a trading strategy with the following characteristics:
+- Name: ${strategy.name}
+- Description: ${strategy.description}
+- Timeframes: ${strategy.timeframes.join(', ')}
+- Indicators: ${strategy.indicators.join(', ')}
 
-${conversationHistory}
+Generate appropriate parameters for this strategy that would allow customization of its behavior.
+For each parameter, include:
+- Name
+- Description
+- Default value
+- Type (number, boolean, string, etc.)
 
-Based on this information, ask me the next most important question to further refine the strategy. Remember to:
-1. Focus on a specific aspect that hasn't been covered
-2. Provide context on why this aspect is important
-3. Give 2-3 example answers
-
-Your next question:`;
-
-      const nextQuestionResponse = await llmProvider.prompt(nextQuestionPrompt);
-      spinner.succeed('Next question ready');
-      
-      // Record this step
-      session.steps.push({
-        id: `llm-question-${questionCount}`,
-        type: 'question',
-        content: nextQuestionResponse.content,
-        timestamp: Date.now()
-      });
-      
-      // Show the next question
-      console.log(chalk.cyan('\n🤔 ' + nextQuestionResponse.content));
-    }
-    
-    // Step 3: Generate the final strategy based on the conversation
-    spinner.start('Generating optimized strategy based on our conversation...');
-    
-    // Create the conversation history for the LLM
-    const fullConversationHistory = session.steps
-      .filter(step => step.type === 'question')
-      .map(step => `Q: ${step.content}\nA: ${step.response || '[No response yet]'}`)
-      .join('\n\n');
-    
-    const finalStrategyPrompt = `Based on our conversation about refining the trading strategy:
-
-${fullConversationHistory}
-
-Please generate a complete, optimized trading strategy based on this conversation. The strategy should include:
-
-1. A clear name and description
-2. Specific indicators to be used
-3. Precise entry and exit conditions
-4. Appropriate timeframes
-5. Risk management parameters
-
-Return the strategy in this JSON format:
+Format your response as a JSON object:
 {
-  "name": "Strategy Name",
-  "description": "Detailed strategy description",
-  "indicators": ["Indicator1", "Indicator2", "Indicator3"],
-  "conditions": ["Detailed condition 1", "Detailed condition 2", "Detailed condition 3", "Detailed condition 4"],
-  "timeframes": ["Timeframe1", "Timeframe2"],
-  "riskParameters": {
-    "maxPositionSize": "X% of total portfolio value",
-    "stopLossPercent": "X% below entry price for long positions, X% above entry price for short positions",
-    "takeProfitPercent": "X% above entry price for long positions, X% below entry price for short positions",
-    "trailingStopPercent": "Activate trailing stop loss at X% in the direction of the trade"
+  "paramName1": {
+    "description": "Description of parameter 1",
+    "default": defaultValue,
+    "type": "number"
+  },
+  "paramName2": {
+    "description": "Description of parameter 2",
+    "default": defaultValue,
+    "type": "boolean"
   }
-}`;
+}
 
-    const finalStrategyResponse = await llmProvider.prompt(finalStrategyPrompt);
-    
-    // Parse the JSON response
-    try {
-      const jsonStart = finalStrategyResponse.content.indexOf('{');
-      const jsonEnd = finalStrategyResponse.content.lastIndexOf('}') + 1;
+Include at least parameters for:
+- Entry and exit conditions
+- Risk management settings
+- Indicator configuration
+`;
       
-      if (jsonStart === -1 || jsonEnd === 0) {
-        throw new Error('JSON not found in response');
+      try {
+        const response = await llmProvider.prompt(paramPrompt);
+        
+        // Extract JSON from response
+        const jsonStart = response.content.indexOf('{');
+        const jsonEnd = response.content.lastIndexOf('}') + 1;
+        
+        if (jsonStart >= 0 && jsonEnd > jsonStart) {
+          const jsonString = response.content.substring(jsonStart, jsonEnd);
+          strategy.parameters = JSON.parse(jsonString);
+        } else {
+          throw new Error('Failed to parse parameters from LLM response');
+        }
+      } catch (error) {
+        console.warn(`Failed to generate parameters: ${error instanceof Error ? error.message : String(error)}`);
+        
+        // Use default parameters if failed to generate
+        strategy.parameters = {
+          entryThreshold: {
+            description: 'Threshold for entry signals',
+            default: 70,
+            type: 'number'
+          },
+          exitThreshold: {
+            description: 'Threshold for exit signals',
+            default: 30,
+            type: 'number'
+          },
+          stopLossPercentage: {
+            description: 'Stop loss as percentage of entry price',
+            default: 5,
+            type: 'number'
+          },
+          takeProfitPercentage: {
+            description: 'Take profit as percentage of entry price',
+            default: 10,
+            type: 'number'
+          }
+        };
       }
       
-      const jsonString = finalStrategyResponse.content.substring(jsonStart, jsonEnd);
-      session.currentStrategy = JSON.parse(jsonString);
+      spinner.succeed('Strategy parameters generated');
       
-      spinner.succeed('Strategy generated successfully');
-    } catch (error) {
-      spinner.fail(`Failed to parse strategy JSON: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(chalk.yellow('Using partially refined strategy instead.'));
-    }
-    
-    // Step 4: Recommend plugins based on the strategy
-    spinner.start('Analyzing strategy to recommend plugins...');
-    
-    try {
-      // Convert strategy to string format for the LLM
-      const strategyDescription = `
-Strategy Name: ${session.currentStrategy.name}
-Description: ${session.currentStrategy.description}
-Indicators: ${session.currentStrategy.indicators.join(', ')}
-Conditions: ${session.currentStrategy.conditions.join(', ')}
-Timeframes: ${session.currentStrategy.timeframes.join(', ')}
-Risk Parameters: ${Object.entries(session.currentStrategy.riskParameters).map(([k, v]) => `${k}: ${v}`).join(', ')}
-`;
-
-      // Get plugin recommendations
-      const recommendations = await llmProvider.recommendPluginsForStrategy(strategyDescription);
+      // Allow user to customize parameters
+      console.log(chalk.cyan('\nCustomize Strategy Parameters'));
       
-      spinner.succeed('Plugin recommendations ready');
+      // Display generated parameters
+      console.log(chalk.gray('\nGenerated parameters:'));
+      for (const [paramName, paramConfig] of Object.entries(strategy.parameters)) {
+        console.log(chalk.white(`- ${paramName}: ${paramConfig.description} (Default: ${paramConfig.default})`));
+      }
       
-      // Display recommendations
-      console.log(chalk.cyan('\n🔌 Recommended Plugins:'));
-      
-      const pluginChoices = recommendations.map(rec => {
-        const confidencePercent = Math.round(rec.confidence * 100);
-        return {
-          name: `${rec.name} (${confidencePercent}% confidence) - ${rec.reasoning.substring(0, 100)}...`,
-          value: rec.name,
-          short: rec.name
-        };
-      });
-      
-      // Add "None" option
-      pluginChoices.push({
-        name: 'None - I\'ll select plugins manually later',
-        value: 'none',
-        short: 'None'
-      });
-      
-      // Ask user to select plugins
-      const pluginSelectionAnswer = await inquirer.prompt([
+      // Ask if user wants to customize
+      const { customizeParams } = await inquirer.prompt([
         {
-          type: 'checkbox',
-          name: 'selectedPlugins',
-          message: 'Select plugins to include with your strategy:',
-          choices: pluginChoices,
-          pageSize: 10
+          type: 'confirm',
+          name: 'customizeParams',
+          message: 'Do you want to customize any parameters?',
+          default: false
         }
       ]);
       
-      // Filter out "None" option if selected with other plugins
-      let selectedPlugins = pluginSelectionAnswer.selectedPlugins;
-      if (selectedPlugins.includes('none') && selectedPlugins.length > 1) {
-        selectedPlugins = selectedPlugins.filter((p: string) => p !== 'none');
-      }
-      
-      // Store selected plugins in session
-      if (selectedPlugins.length > 0 && !selectedPlugins.includes('none')) {
-        if (!session.environmentSettings) {
-          session.environmentSettings = {};
+      if (customizeParams) {
+        const paramChoices = Object.keys(strategy.parameters).map(param => ({
+          name: `${param}: ${strategy.parameters[param].description}`,
+          value: param
+        }));
+        
+        const { paramsToCustomize } = await inquirer.prompt([
+          {
+            type: 'checkbox',
+            name: 'paramsToCustomize',
+            message: 'Select parameters to customize:',
+            choices: paramChoices
+          }
+        ]);
+        
+        for (const param of paramsToCustomize) {
+          const paramConfig = strategy.parameters[param];
+          const defaultValue = paramConfig.default;
+          
+          let promptType: string;
+          switch (paramConfig.type) {
+          case 'number':
+            promptType = 'number';
+            break;
+          case 'boolean':
+            promptType = 'confirm';
+            break;
+          default:
+            promptType = 'input';
+          }
+          
+          const { value } = await inquirer.prompt([
+            {
+              type: promptType,
+              name: 'value',
+              message: `Enter value for ${param} (${paramConfig.description}):`,
+              default: defaultValue
+            }
+          ]);
+          
+          // Update the parameter value
+          paramConfig.default = value;
         }
-        session.environmentSettings.plugins = selectedPlugins;
       }
-      
+    } else {
+      // Non-interactive mode, use provided options
+      strategy = {
+        name: options.strategyName || 'DefaultStrategy',
+        description: options.description || 'A default trading strategy',
+        timeframes: options.timeframes || ['1h', '4h'],
+        indicators: options.indicators || ['RSI', 'Moving Average'],
+        parameters: {}
+      };
+    }
+    
+    // Generate strategy implementation
+    console.log(chalk.cyan('\nGenerating Strategy Implementation'));
+    
+    spinner.start('Generating strategy code...');
+    
+    const pluginImports = pluginDocs.map(plugin => plugin.name).join(', ');
+    
+    const codePrompt = `
+Create a TypeScript implementation for a crypto trading strategy with the following specifications:
+- Name: ${strategy.name}
+- Description: ${strategy.description}
+- Timeframes: ${strategy.timeframes.join(', ')}
+- Indicators: ${strategy.indicators.join(', ')}
+- Parameters: ${JSON.stringify(strategy.parameters, null, 2)}
+${pluginDocs.length > 0 ? `- Available Plugins: ${pluginImports}` : ''}
+
+Generate a complete TypeScript file that implements this strategy. 
+The strategy should:
+1. Import necessary dependencies
+2. Define a class that implements the strategy logic
+3. Include methods for initialization, processing data, and generating signals
+4. Properly use the specified indicators
+5. Handle different timeframes
+6. Use the defined parameters with their default values
+7. Include appropriate comments
+
+For each indicator, implement the calculation logic or use appropriate libraries.
+Make the code clean, well-structured, and performant.
+
+Start the file with appropriate imports and end with exports.
+`;
+    
+    let implementation = '';
+    try {
+      const response = await llmProvider.generateCode(codePrompt, 'typescript');
+      implementation = response.content;
     } catch (error) {
-      spinner.warn(`Plugin recommendation failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(chalk.yellow('Continuing without plugin recommendations.'));
+      spinner.fail(`Failed to generate code: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error('Strategy generation failed');
     }
-    
-    // Step 5: Generate the implementation code
-    spinner.start('Generating strategy implementation code...');
-    
-    // Determine which plugins to use
-    let targetPlugins: string[] = [];
-    
-    // Use plugins selected during recommendation step if available
-    if (session.environmentSettings?.plugins && session.environmentSettings.plugins.length > 0) {
-      targetPlugins = session.environmentSettings.plugins;
-    } 
-    // Otherwise use plugins from options if provided
-    else if (options.targetPlugins && options.targetPlugins.length > 0) {
-      targetPlugins = options.targetPlugins;
-    } 
-    // Default to common plugins if none specified
-    else {
-      targetPlugins = ['crypto-market-data', 'trading-signals', 'risk-management'];
-    }
-    
-    // Generate the implementation
-    const implementation = await generateStrategyImplementation(session.currentStrategy, targetPlugins);
     
     spinner.succeed('Strategy implementation generated');
     
-    // Step 6: Generate Starter Kit configuration if needed
-    let starterKitConfig: Record<string, any> | undefined;
+    // Save the strategy if output directory is provided
+    let filePath: string | undefined;
     
-    if (options.outputFormat === 'starter-kit') {
-      spinner.start('Generating Recall Starter Kit configuration...');
-      
-      // This is a placeholder for future Starter Kit integration
-      // We'll generate a basic config structure that can be extended later
-      starterKitConfig = {
-        strategy: {
-          name: session.currentStrategy.name,
-          type: getStrategyTypeFromName(session.currentStrategy.name),
-          config: {
-            indicators: session.currentStrategy.indicators,
-            timeframes: session.currentStrategy.timeframes,
-            riskParams: session.currentStrategy.riskParameters
-          }
-        },
-        environment: {
-          ...session.environmentSettings
-        },
-        plugins: targetPlugins,
-        execution: {
-          mode: 'continuous',
-          interval: getDefaultIntervalFromTimeframes(session.currentStrategy.timeframes)
+    if (options.outputDir) {
+      try {
+        // Create output directory if it doesn't exist
+        if (!fs.existsSync(options.outputDir)) {
+          fs.mkdirSync(options.outputDir, { recursive: true });
         }
-      };
-      
-      spinner.succeed('Starter Kit configuration generated');
+        
+        // Create safe filename from strategy name
+        const safeFileName = strategy.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
+        
+        // Save strategy implementation
+        filePath = path.join(options.outputDir, `${safeFileName}.ts`);
+        fs.writeFileSync(filePath, implementation);
+        
+        // Save strategy definition
+        const strategyJsonPath = path.join(options.outputDir, `${safeFileName}.json`);
+        fs.writeFileSync(strategyJsonPath, JSON.stringify(strategy, null, 2));
+        
+        // Save session information
+        const sessionData = {
+          timestamp: new Date().toISOString(),
+          strategy,
+          options,
+          pluginDocs: pluginDocs.map(p => p.name)
+        };
+        const sessionPath = path.join(options.outputDir, `${safeFileName}-session.json`);
+        fs.writeFileSync(sessionPath, JSON.stringify(sessionData, null, 2));
+        
+        console.log(chalk.green(`\nStrategy saved to: ${filePath}`));
+        console.log(chalk.green(`Strategy definition saved to: ${strategyJsonPath}`));
+        console.log(chalk.green(`Session information saved to: ${sessionPath}`));
+      } catch (error) {
+        console.error(`Failed to save strategy: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     
-    // Display the final strategy summary
-    console.log(chalk.green('\n✅ Strategy Building Complete\n'));
-    console.log(chalk.bold(session.currentStrategy.name));
-    console.log(chalk.gray(session.currentStrategy.description));
-    console.log(chalk.cyan('\nIndicators:'));
-    session.currentStrategy.indicators.forEach(indicator => console.log(`- ${indicator}`));
-    console.log(chalk.cyan('\nEntry/Exit Conditions:'));
-    session.currentStrategy.conditions.forEach(condition => console.log(`- ${condition}`));
-    console.log(chalk.cyan('\nTimeframes:'));
-    session.currentStrategy.timeframes.forEach(timeframe => console.log(`- ${timeframe}`));
-    console.log(chalk.cyan('\nRisk Parameters:'));
-    Object.entries(session.currentStrategy.riskParameters).forEach(([key, value]) => {
-      console.log(`- ${key}: ${value}`);
-    });
-    
-    // Create result
-    const result: StrategyBuilderResult = {
-      strategy: session.currentStrategy,
+    // Return the result
+    return {
+      strategy,
       implementation,
-      session,
-      starterKitConfig
+      filePath
     };
-    
-    return result;
   } catch (error) {
-    console.error(chalk.red(`Error building strategy: ${error instanceof Error ? error.message : String(error)}`));
+    console.error(`Strategy building failed: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
-  } finally {
-    // Clean up
-    await mcpServer.stop();
   }
 }
-
-/**
- * Get strategy type from strategy name
- */
-function getStrategyTypeFromName(name: string): string {
-  const lowercaseName = name.toLowerCase();
-  
-  if (lowercaseName.includes('momentum') || lowercaseName.includes('trend')) {
-    return StrategyType.MOMENTUM;
-  } else if (lowercaseName.includes('reversion') || lowercaseName.includes('mean')) {
-    return StrategyType.MEAN_REVERSION;
-  } else if (lowercaseName.includes('arbitrage')) {
-    return StrategyType.ARBITRAGE;
-  } else {
-    return StrategyType.CUSTOM;
-  }
-}
-
-/**
- * Get default execution interval from timeframes
- */
-function getDefaultIntervalFromTimeframes(timeframes: string[]): number {
-  // Find the smallest timeframe
-  const timeframeMap: Record<string, number> = {
-    '1m': 60,
-    '5m': 300,
-    '15m': 900,
-    '30m': 1800,
-    '1h': 3600,
-    '4h': 14400,
-    '1d': 86400,
-  };
-  
-  let smallestInterval = 86400; // Default to 1 day
-  
-  for (const timeframe of timeframes) {
-    const normalizedTimeframe = timeframe.toLowerCase().replace(' ', '');
-    const seconds = timeframeMap[normalizedTimeframe];
-    
-    if (seconds && seconds < smallestInterval) {
-      smallestInterval = seconds;
-    }
-  }
-  
-  return smallestInterval;
-} 

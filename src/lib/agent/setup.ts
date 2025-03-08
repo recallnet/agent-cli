@@ -9,7 +9,7 @@ import { LlmProvider } from '../llm/provider.js';
 import { McpClient } from '../mcp/client.js';
 import { PluginRegistry } from '../plugins/registry.js';
 import { buildStrategyInteractively } from '../strategy/interactive-builder.js';
-import { generateCharacter, CharacterConfig, saveCharacter } from './character.js';
+import { CharacterConfig, generateCharacterForSetup, saveCharacterConfig } from './character.js';
 import { DocResponse } from '../mcp/server.js';
 
 /**
@@ -26,8 +26,27 @@ export interface SetupSession {
   installedPlugins: string[];
   character?: CharacterConfig;
   strategy?: any;
+  strategyImplementation?: string;
   competitionUrl?: string;
   competitionInfo?: any;
+  tradingGoals?: string;
+  tradingGoalsAnalysis?: {
+    assets: string[];
+    timeframes: string[];
+    riskProfile: string;
+    strategyType: string;
+    indicators: string[];
+    specialRequirements: string[];
+  };
+  competitionAnalysis?: {
+    assets: string[];
+    timeframes: string[];
+    evaluationMetrics: string[];
+    constraints: string[];
+    strategyRecommendations: string[];
+  };
+  selectedPlugins?: string[];
+  requiredEnvironmentVars?: Record<string, string[]>;
 }
 
 /**
@@ -658,7 +677,13 @@ Keep it clear and detailed but concise (less than 300 words).`;
       const builderOptions = {
         outputFormat: 'standard' as const,
         interactive: true,
-        targetPlugins: this.session.installedPlugins || []
+        targetPlugins: this.session.installedPlugins || [],
+        outputDir: path.join(this.session.projectPath, 'strategies'),
+        strategyName: this.session.tradingGoalsAnalysis?.strategyType 
+          ? `${this.session.tradingGoalsAnalysis.strategyType.charAt(0).toUpperCase() + this.session.tradingGoalsAnalysis.strategyType.slice(1)} Strategy` 
+          : undefined,
+        timeframes: this.session.tradingGoalsAnalysis?.timeframes,
+        indicators: this.session.tradingGoalsAnalysis?.indicators
       };
       
       // Launch the interactive strategy builder
@@ -706,7 +731,7 @@ Installed Plugins: ${this.session.installedPlugins?.join(', ') || 'None'}
       this.spinner.start('Generating character suggestion...');
       
       // Generate character
-      const character = await generateCharacter(context, this.llmProvider);
+      const character = await generateCharacterForSetup(context, this.llmProvider);
       
       this.spinner.succeed('Character generated');
       
@@ -776,7 +801,7 @@ Installed Plugins: ${this.session.installedPlugins?.join(', ') || 'None'}
       const safeName = character.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
       const characterFile = path.join(characterPath, `${safeName}.json`);
       
-      await saveCharacter(character, characterFile);
+      await saveCharacterConfig(character, characterFile);
       
       console.log(chalk.green(`\nCharacter saved to ${characterFile}`));
       
