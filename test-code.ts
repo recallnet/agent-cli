@@ -36,7 +36,7 @@ export class MarketDataFetcher {
   async getHistoricalPrices(symbol: string, days = 7): Promise<number[]> {
     console.log(`Fetching ${days} days of historical data for ${symbol}`);
     
-    const prices = [];
+    const prices: number[] = [];
     const basePrice = Math.random() * 10000;
     
     // Generate random historical prices

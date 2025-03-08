@@ -32,6 +32,18 @@ export interface CodeAnalysisOptions {
 }
 
 /**
+ * Context generation options
+ */
+export interface ContextGenerationOptions {
+  strategy?: string; // Strategy description
+  competitionId?: string; // Competition ID
+  tradingPairs?: string[]; // Trading pairs
+  pluginNames?: string[]; // Plugin names
+  timeframe?: string; // Timeframe
+  questionOrTask?: string; // User's specific question or task
+}
+
+/**
  * MCP Client for retrieving documentation from the MCP server
  */
 export class McpClient {
@@ -66,23 +78,25 @@ export class McpClient {
   /**
    * Get plugin documentation
    */
-  async getPluginDocumentation(pluginName: string): Promise<DocResponse> {
+  async getPluginDocumentation(pluginName: string, context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.PLUGIN,
       query: pluginName,
+      params: context ? { context } : undefined
     });
   }
   
   /**
    * Get documentation from a GitHub repository
    */
-  async getGithubDocumentation(repo: string, path = 'README.md', branch = 'main'): Promise<DocResponse> {
+  async getGithubDocumentation(repo: string, path = 'README.md', branch = 'main', context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.GITHUB,
       query: repo,
       params: {
         path,
         branch,
+        ...(context ? { context } : {})
       },
     });
   }
@@ -90,7 +104,7 @@ export class McpClient {
   /**
    * Scan a GitHub repository to understand its structure and code
    */
-  async scanGithubRepository(repo: string, options: GithubScanOptions = {}): Promise<DocResponse> {
+  async scanGithubRepository(repo: string, options: GithubScanOptions = {}, context?: string): Promise<DocResponse> {
     const params: Record<string, string> = {
       ...options.branch && { branch: options.branch },
       ...options.fileTypes && { fileTypes: options.fileTypes.join(',') },
@@ -100,6 +114,7 @@ export class McpClient {
       ...options.excludePatterns && { excludePatterns: options.excludePatterns.join(',') },
       ...options.fetchContent !== undefined && { fetchContent: options.fetchContent.toString() },
       ...options.includeDependencies !== undefined && { includeDependencies: options.includeDependencies.toString() },
+      ...(context ? { context } : {})
     };
     
     return this.getDocumentation({
@@ -112,51 +127,60 @@ export class McpClient {
   /**
    * Get documentation from a URL
    */
-  async getUrlDocumentation(url: string): Promise<DocResponse> {
+  async getUrlDocumentation(url: string, context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.URL,
       query: url,
+      params: context ? { context } : undefined
     });
   }
   
   /**
    * Get documentation from a local markdown file
    */
-  async getMarkdownDocumentation(filePath: string): Promise<DocResponse> {
+  async getMarkdownDocumentation(filePath: string, context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.MARKDOWN,
       query: filePath,
+      params: context ? { context } : undefined
     });
   }
   
   /**
    * Get competition documentation
    */
-  async getCompetitionDocumentation(competitionId: string): Promise<DocResponse> {
+  async getCompetitionDocumentation(competitionId: string, context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.COMPETITION,
       query: competitionId,
+      params: context ? { context } : undefined
     });
   }
   
   /**
    * Get strategy documentation
    */
-  async getStrategyDocumentation(strategyType: string): Promise<DocResponse> {
+  async getStrategyDocumentation(strategyType: string, context?: string): Promise<DocResponse> {
     return this.getDocumentation({
       type: DocSourceType.STRATEGY,
       query: strategyType,
+      params: context ? { context } : undefined
     });
   }
   
   /**
    * Analyze code to provide insights about its structure and usage
    */
-  async analyzeCode(code: string, options: CodeAnalysisOptions = {}): Promise<DocResponse> {
+  async analyzeCode(code: string, options: CodeAnalysisOptions = {}, context?: string): Promise<DocResponse> {
     try {
+      const params = {
+        ...options,
+        ...(context ? { context } : {})
+      };
+      
       const response = await axios.post(`${this.options.baseUrl}/analyze-code`, {
         code,
-        params: options,
+        params
       }, {
         timeout: this.options.timeout,
         headers: {
@@ -174,7 +198,7 @@ export class McpClient {
   /**
    * Scan a plugin's GitHub repository to help understand how to use it
    */
-  async scanPluginRepository(pluginName: string, options: GithubScanOptions = {}): Promise<DocResponse> {
+  async scanPluginRepository(pluginName: string, options: GithubScanOptions = {}, context?: string): Promise<DocResponse> {
     try {
       // First, get the plugin info to locate the repository
       const pluginDoc = await this.getPluginDocumentation(pluginName);
@@ -195,6 +219,11 @@ export class McpClient {
       
       const repoPath = repoMatch[1];
       
+      // Create a context that combines plugin info with user's context
+      const enhancedContext = context ? 
+        `Plugin: ${pluginName}. ${pluginInfo.description}. ${context}` :
+        `Plugin: ${pluginName}. ${pluginInfo.description}. How to use this plugin, its main features, and integration examples.`;
+      
       // Scan the repository
       return this.scanGithubRepository(repoPath, {
         branch: 'main',
@@ -204,7 +233,7 @@ export class McpClient {
         fetchContent: true,
         includeDependencies: true,
         ...options,
-      });
+      }, enhancedContext);
     } catch (error) {
       console.error(`Failed to scan plugin repository for ${pluginName}: ${error instanceof Error ? error.message : String(error)}`);
       throw new Error(`MCP client scan error: ${error instanceof Error ? error.message : String(error)}`);
@@ -214,13 +243,18 @@ export class McpClient {
   /**
    * Get plugin usage examples based on repository code scan and analysis
    */
-  async getPluginUsageExamples(pluginName: string): Promise<DocResponse> {
+  async getPluginUsageExamples(pluginName: string, context?: string): Promise<DocResponse> {
     try {
+      // Create specific context for usage examples
+      const usageContext = context ? 
+        `${context} Code examples, usage patterns, and implementation samples.` :
+        `Examples of how to use ${pluginName} plugin. Code samples, integration patterns, and best practices.`;
+      
       // First, scan the plugin repository to understand its structure
       const scanResult = await this.scanPluginRepository(pluginName, {
         maxFiles: 10, // Limit to fewer files for faster processing
         includePatterns: ['src', 'examples', 'docs'],
-      });
+      }, usageContext);
       
       // Get plugin documentation
       const pluginDoc = await this.getPluginDocumentation(pluginName);
@@ -248,43 +282,20 @@ ${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-p
 // Use the plugin functionality
 // (Add specific usage examples based on plugin purpose)
 \`\`\`
-
-### Integration with Recall Agent
-\`\`\`typescript
-// In your agent implementation
-import { RecallAgent } from '@elizaos/recall-agent';
-${pluginDoc.metadata?.importStatement || `import { PluginName } from '@elizaos-plugins/plugin-${pluginName}';`}
-
-class MyTradingAgent extends RecallAgent {
-  private plugin: any; // Replace with actual plugin type
-  
-  constructor() {
-    super();
-    // Initialize the plugin
-    this.plugin = new ${pluginName.replace(/-./g, x => x[1].toUpperCase())}();
-  }
-  
-  async run() {
-    // Use the plugin in your trading logic
-    // (Add specific usage examples based on plugin purpose)
-  }
-}
-\`\`\`
 `;
       
       return {
         content,
-        source: `plugin_usage:${pluginName}`,
+        source: `plugin-examples:${pluginName}`,
         timestamp: Date.now(),
         metadata: {
-          pluginName,
-          pluginInfo: pluginDoc.metadata,
-          scanResult: scanResult.metadata,
-        },
+          plugin: pluginName,
+          repository: scanResult.metadata?.repository
+        }
       };
     } catch (error) {
       console.error(`Failed to get plugin usage examples for ${pluginName}: ${error instanceof Error ? error.message : String(error)}`);
-      throw new Error(`MCP client usage error: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`MCP client examples error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   
@@ -317,7 +328,7 @@ class MyTradingAgent extends RecallAgent {
       return response.data.plugins || {};
     } catch (error) {
       console.error(`Failed to list plugins: ${error instanceof Error ? error.message : String(error)}`);
-      throw new Error(`MCP client list error: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`MCP client error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   
@@ -334,5 +345,155 @@ class MyTradingAgent extends RecallAgent {
     } catch (error) {
       return false;
     }
+  }
+  
+  /**
+   * Generate context for documentation retrieval
+   * Creates a rich context to help filter and optimize retrieved documentation
+   */
+  generateContext(options: ContextGenerationOptions): string {
+    const contextParts: string[] = [];
+    
+    // Add strategy if available
+    if (options.strategy) {
+      contextParts.push(`Strategy: ${options.strategy}`);
+    }
+    
+    // Add competition if available
+    if (options.competitionId) {
+      contextParts.push(`Competition: ${options.competitionId}`);
+    }
+    
+    // Add trading pairs if available
+    if (options.tradingPairs && options.tradingPairs.length > 0) {
+      contextParts.push(`Trading pairs: ${options.tradingPairs.join(', ')}`);
+    }
+    
+    // Add plugins if available
+    if (options.pluginNames && options.pluginNames.length > 0) {
+      contextParts.push(`Plugins: ${options.pluginNames.join(', ')}`);
+    }
+    
+    // Add timeframe if available
+    if (options.timeframe) {
+      contextParts.push(`Timeframe: ${options.timeframe}`);
+    }
+    
+    // Add user's question or task
+    if (options.questionOrTask) {
+      contextParts.push(`Question/Task: ${options.questionOrTask}`);
+    }
+    
+    // If no options were provided, return a general context
+    if (contextParts.length === 0) {
+      return 'Cryptocurrency trading, trading signals, technical analysis, strategy development, risk management, and automated trading with the Eliza Plugin ecosystem.';
+    }
+    
+    return contextParts.join('. ');
+  }
+  
+  /**
+   * Get documentation for a trading strategy
+   * Automatically optimizes the search based on strategy information
+   */
+  async getDocumentationForStrategy(strategy: any, questionOrTask?: string): Promise<DocResponse[]> {
+    try {
+      const strategyDescription = typeof strategy === 'string' ? strategy : 
+        `${strategy.name}: ${strategy.description}. Indicators: ${strategy.indicators?.join(', ')}. Timeframes: ${strategy.timeframes?.join(', ')}.`;
+      
+      // Create context from strategy
+      const context = this.generateContext({
+        strategy: strategyDescription,
+        tradingPairs: strategy.tradingPairs,
+        timeframe: Array.isArray(strategy.timeframes) ? strategy.timeframes.join(', ') : strategy.timeframes,
+        questionOrTask
+      });
+      
+      // Gather documentation from relevant sources
+      const docs: DocResponse[] = [];
+      
+      // Get relevant strategy docs
+      const strategyType = this.detectStrategyType(strategyDescription);
+      if (strategyType) {
+        const strategyDocs = await this.getStrategyDocumentation(strategyType, context);
+        docs.push(strategyDocs);
+      }
+      
+      // Get plugin docs for indicators mentioned in the strategy
+      if (strategy.indicators && Array.isArray(strategy.indicators)) {
+        const indicatorPlugins = this.mapIndicatorsToPlugins(strategy.indicators);
+        for (const plugin of indicatorPlugins) {
+          try {
+            const pluginDocs = await this.getPluginDocumentation(plugin, context);
+            docs.push(pluginDocs);
+          } catch (error) {
+            console.warn(`Could not get docs for plugin ${plugin}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+      
+      return docs;
+    } catch (error) {
+      console.error(`Failed to get documentation for strategy: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`MCP client strategy docs error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  /**
+   * Detect strategy type from description
+   */
+  private detectStrategyType(description: string): string | null {
+    const lowerDesc = description.toLowerCase();
+    
+    if (lowerDesc.includes('momentum') || lowerDesc.includes('trend') || lowerDesc.includes('following')) {
+      return 'momentum';
+    } else if (lowerDesc.includes('reversion') || lowerDesc.includes('mean') || lowerDesc.includes('oscillation')) {
+      return 'mean-reversion';
+    } else if (lowerDesc.includes('arbitrage')) {
+      return 'arbitrage';
+    } else if (lowerDesc.includes('grid')) {
+      return 'grid';
+    } else if (lowerDesc.includes('statistical') || lowerDesc.includes('stat arb')) {
+      return 'statistical-arbitrage';
+    } else {
+      return null;
+    }
+  }
+  
+  /**
+   * Map indicators to likely plugin names
+   */
+  private mapIndicatorsToPlugins(indicators: string[]): string[] {
+    const pluginMap: Record<string, string[]> = {
+      'macd': ['trading-signals', 'technical-indicators'],
+      'rsi': ['trading-signals', 'technical-indicators'],
+      'moving average': ['trading-signals', 'technical-indicators'],
+      'bollinger': ['trading-signals', 'technical-indicators'],
+      'volume': ['crypto-market-data', 'market-volume-analyzer'],
+      'price': ['crypto-market-data', 'price-feed'],
+      'order book': ['order-book-analyzer', 'exchange-connector'],
+      'candle': ['crypto-market-data', 'candlestick-patterns']
+    };
+    
+    const plugins = new Set<string>();
+    
+    // Default plugins that are almost always useful
+    plugins.add('crypto-market-data');
+    plugins.add('trading-signals');
+    
+    // Add plugins based on indicators
+    for (const indicator of indicators) {
+      const lowerIndicator = indicator.toLowerCase();
+      
+      for (const [key, pluginsForIndicator] of Object.entries(pluginMap)) {
+        if (lowerIndicator.includes(key)) {
+          for (const plugin of pluginsForIndicator) {
+            plugins.add(plugin);
+          }
+        }
+      }
+    }
+    
+    return Array.from(plugins);
   }
 } 

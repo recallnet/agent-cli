@@ -6,6 +6,7 @@ import { PluginRegistry } from '../plugins/registry.js';
 import * as path from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
+import * as cheerio from 'cheerio';
 
 /**
  * MCP Server options
@@ -79,6 +80,39 @@ export interface GithubFileInfo {
   sha: string;
   url: string;
   download_url?: string;
+}
+
+/**
+ * Content type enumeration
+ */
+export enum ContentType {
+  HTML = 'html',
+  MARKDOWN = 'markdown',
+  JSON = 'json',
+  CODE = 'code',
+  TEXT = 'text',
+  UNKNOWN = 'unknown'
+}
+
+/**
+ * Content extraction result
+ */
+export interface ContentExtractionResult {
+  content: string;
+  contentType: ContentType;
+  title?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Document chunk for semantic searching
+ */
+export interface DocumentChunk {
+  id: string;
+  content: string;
+  source: string;
+  metadata?: Record<string, any>;
+  relevanceScore?: number;
 }
 
 /**
@@ -198,6 +232,11 @@ export class McpServer extends EventEmitter {
         throw new Error(`Unsupported documentation source type: ${request.type}`);
       }
       
+      // Optimize the documentation content for relevance if a context is provided
+      if (request.params?.context) {
+        docResponse = await this.optimizeDocumentationForContext(docResponse, request.params.context);
+      }
+      
       // Cache the result
       this.cache.set(cacheKey, docResponse);
       this.emit('cache-miss', { request });
@@ -210,15 +249,280 @@ export class McpServer extends EventEmitter {
   }
   
   /**
+   * Optimize documentation for a specific context
+   */
+  private async optimizeDocumentationForContext(doc: DocResponse, context: string): Promise<DocResponse> {
+    try {
+      // Create chunks from the document content
+      const chunks = this.createDocumentChunks(doc.content, doc.source);
+      
+      // Calculate relevance scores for each chunk
+      const scoredChunks = this.scoreChunksForRelevance(chunks, context);
+      
+      // Sort chunks by relevance score (highest first)
+      scoredChunks.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+      
+      // Take the most relevant chunks up to a reasonable size limit for context
+      const relevantChunks = this.selectRelevantChunks(scoredChunks, 4000);
+      
+      // Combine the relevant chunks into a coherent document
+      const optimizedContent = this.combineChunks(relevantChunks);
+      
+      // Return optimized document
+      return {
+        ...doc,
+        content: optimizedContent,
+        metadata: {
+          ...doc.metadata,
+          optimized: true,
+          relevantChunksCount: relevantChunks.length,
+          totalChunksCount: chunks.length
+        }
+      };
+    } catch (error) {
+      console.warn(`Error optimizing documentation: ${error instanceof Error ? error.message : String(error)}`);
+      return doc; // Return original document if optimization fails
+    }
+  }
+  
+  /**
+   * Create chunks from a document content
+   */
+  private createDocumentChunks(content: string, source: string): DocumentChunk[] {
+    // Split by headings or natural paragraphs
+    const chunks: DocumentChunk[] = [];
+    
+    // Clean up content
+    const cleanContent = content.replace(/\r\n/g, '\n');
+    
+    // Try to detect if this is markdown content
+    const isMarkdown = source.includes('.md') || 
+                        source.includes('markdown') || 
+                        /^#+ /.test(cleanContent.trim().split('\n')[0]);
+    
+    if (isMarkdown) {
+      // Split by markdown headings
+      const headingRegex = /^#{1,6} .+$/gm;
+      const headingMatches = [...cleanContent.matchAll(headingRegex)];
+      
+      if (headingMatches.length > 0) {
+        let lastIndex = 0;
+        
+        for (let i = 0; i < headingMatches.length; i++) {
+          const match = headingMatches[i];
+          if (!match.index) continue;
+          
+          if (i > 0 && lastIndex < match.index) {
+            // Add content between headings
+            const sectionContent = cleanContent.substring(lastIndex, match.index).trim();
+            if (sectionContent) {
+              const heading = headingMatches[i-1][0];
+              chunks.push({
+                id: `${source}-${i-1}`,
+                content: `${heading}\n\n${sectionContent}`,
+                source
+              });
+            }
+          }
+          
+          lastIndex = match.index;
+        }
+        
+        // Don't forget the last section
+        const lastSection = cleanContent.substring(lastIndex).trim();
+        if (lastSection) {
+          const heading = headingMatches[headingMatches.length-1][0];
+          chunks.push({
+            id: `${source}-${headingMatches.length-1}`,
+            content: `${heading}\n\n${lastSection}`,
+            source
+          });
+        }
+      }
+    }
+    
+    // If no chunks created yet, split by paragraphs
+    if (chunks.length === 0) {
+      const paragraphs = cleanContent
+        .split(/\n\s*\n/)
+        .filter(p => p.trim().length > 0);
+      
+      if (paragraphs.length > 1) {
+        paragraphs.forEach((p, i) => {
+          chunks.push({
+            id: `${source}-p${i}`,
+            content: p,
+            source
+          });
+        });
+      } else {
+        // If no clear paragraphs, split by sentences or fixed size
+        const sentences = cleanContent
+          .replace(/([.!?])\s+/g, '$1\n')
+          .split('\n')
+          .filter(s => s.trim().length > 0);
+        
+        const chunkSize = 3; // Group sentences in chunks of 3
+        
+        for (let i = 0; i < sentences.length; i += chunkSize) {
+          const chunkSentences = sentences.slice(i, i + chunkSize);
+          chunks.push({
+            id: `${source}-s${i}`,
+            content: chunkSentences.join(' '),
+            source
+          });
+        }
+      }
+    }
+    
+    // If still no chunks, create a single chunk from the entire content
+    if (chunks.length === 0) {
+      chunks.push({
+        id: `${source}-full`,
+        content: cleanContent,
+        source
+      });
+    }
+    
+    return chunks;
+  }
+  
+  /**
+   * Score chunks for relevance to a context
+   */
+  private scoreChunksForRelevance(chunks: DocumentChunk[], context: string): DocumentChunk[] {
+    // Normalize context for matching
+    const normalizedContext = this.normalizeText(context);
+    const contextWords = new Set(this.getSignificantWords(normalizedContext));
+    
+    // Clone chunks to avoid modifying originals
+    const scoredChunks = [...chunks];
+    
+    // Score each chunk
+    for (const chunk of scoredChunks) {
+      const normalizedContent = this.normalizeText(chunk.content);
+      const contentWords = this.getSignificantWords(normalizedContent);
+      
+      // Calculate word overlap
+      let matchCount = 0;
+      for (const word of contentWords) {
+        if (contextWords.has(word)) {
+          matchCount++;
+        }
+      }
+      
+      // Calculate relevance score (0-1)
+      const overlapScore = contextWords.size > 0 ? matchCount / contextWords.size : 0;
+      
+      // Boost score for chunks with headings that match context
+      const hasHeading = /^#{1,6} .+$/m.test(chunk.content);
+      const headingBoost = hasHeading ? 0.2 : 0;
+      
+      // Calculate final score
+      chunk.relevanceScore = Math.min(overlapScore + headingBoost, 1);
+    }
+    
+    return scoredChunks;
+  }
+  
+  /**
+   * Normalize text for comparison
+   */
+  private normalizeText(text: string): string {
+    return text.toLowerCase()
+      .replace(/[^\w\s]/g, ' ') // Replace punctuation with spaces
+      .replace(/\s+/g, ' ')     // Normalize whitespace
+      .trim();
+  }
+  
+  /**
+   * Get significant words from text (filtering out common stop words)
+   */
+  private getSignificantWords(text: string): string[] {
+    // Common English stop words to filter out
+    const stopWords = new Set([
+      'a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'by',
+      'is', 'are', 'was', 'were', 'be', 'been', 'being',
+      'in', 'of', 'if', 'it', 'its', 'it\'s', 'this', 'that',
+      'from', 'with', 'as', 'i', 'we', 'our', 'you', 'he', 'she', 'they',
+      'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'shall', 'should',
+      'can', 'could', 'may', 'might', 'must'
+    ]);
+    
+    return text.split(/\s+/)
+      .filter(word => word.length > 1 && !stopWords.has(word))
+      .map(word => word.toLowerCase());
+  }
+  
+  /**
+   * Select the most relevant chunks up to a maximum total size
+   */
+  private selectRelevantChunks(chunks: DocumentChunk[], maxTotalSize: number): DocumentChunk[] {
+    let totalSize = 0;
+    const selectedChunks = [];
+    
+    // Only include chunks with some relevance
+    const relevantChunks = chunks.filter(chunk => (chunk.relevanceScore || 0) > 0.1);
+    
+    for (const chunk of relevantChunks) {
+      const chunkSize = chunk.content.length;
+      
+      if (totalSize + chunkSize <= maxTotalSize) {
+        selectedChunks.push(chunk);
+        totalSize += chunkSize;
+      } else {
+        break;
+      }
+    }
+    
+    return selectedChunks;
+  }
+  
+  /**
+   * Combine chunks into a coherent document
+   */
+  private combineChunks(chunks: DocumentChunk[]): string {
+    if (chunks.length === 0) {
+      return '';
+    }
+    
+    // Sort chunks to maintain original document order
+    chunks.sort((a, b) => a.id.localeCompare(b.id));
+    
+    return chunks.map(chunk => chunk.content).join('\n\n');
+  }
+  
+  /**
    * Fetch plugin documentation
    */
-  private async fetchPluginDocumentation(pluginName: string, _params?: Record<string, string>): Promise<DocResponse> {
+  private async fetchPluginDocumentation(pluginName: string, params?: Record<string, string>): Promise<DocResponse> {
     try {
       // Get plugin info from registry
       const pluginInfo = await this.pluginRegistry.getPlugin(pluginName);
       
       if (!pluginInfo) {
-        throw new Error(`Plugin ${pluginName} not found`);
+        console.log(`Plugin ${pluginName} not found in registry, trying GitHub fallback`);
+        
+        // Try to find it on GitHub instead
+        try {
+          // If plugin name has a prefix like "plugin-", use it directly
+          const repoName = pluginName.startsWith('plugin-') 
+            ? pluginName 
+            : `plugin-${pluginName}`;
+            
+          // First try elizaos-plugins organization
+          // Pass extra parameters through the params object
+          const githubParams = {
+            path: 'README.md',
+            branch: 'main',
+            ...(params?.context ? { context: params.context } : {})
+          };
+          
+          return await this.fetchGithubDocumentation(`elizaos-plugins/${repoName}`, githubParams);
+        } catch (githubErr) {
+          console.warn(`Failed to fetch from GitHub: ${githubErr instanceof Error ? githubErr.message : String(githubErr)}`);
+          throw new Error(`Plugin ${pluginName} not found in registry or GitHub`);
+        }
       }
       
       // Fetch README if available
@@ -249,31 +553,24 @@ ${pluginInfo.description}
 ## Version
 ${pluginInfo.version}
 
-## Author
-${pluginInfo.author}
-
-## License
-${pluginInfo.license}
-
-## Required Environment Variables
-${pluginInfo.requiredEnv && pluginInfo.requiredEnv.length > 0 
-    ? pluginInfo.requiredEnv.map((env: string) => `- ${env}`).join('\n')
-    : 'None'}
-
-## Dependencies
-${Object.entries(pluginInfo.dependencies || {})
-    .map(([dep, version]) => `- ${dep}: ${version}`)
-    .join('\n')}
-
-## Usage
-\`\`\`typescript
-${pluginInfo.importStatement}
+## Installation
+\`\`\`bash
+npm install ${pluginInfo.name}
 \`\`\`
 
-## Documentation
-${readmeContent}
-`;
+## Required Environment Variables
+${pluginInfo.requiredEnv && pluginInfo.requiredEnv.length > 0
+    ? pluginInfo.requiredEnv.map(env => `- \`${env}\``).join('\n')
+    : 'No environment variables required.'}
 
+## Dependencies
+${pluginInfo.dependencies && Object.keys(pluginInfo.dependencies).length > 0
+    ? Object.entries(pluginInfo.dependencies).map(([name, version]) => `- ${name}: ${version}`).join('\n')
+    : 'No dependencies.'}
+
+${readmeContent ? `## Documentation\n\n${readmeContent}` : ''}
+`;
+      
       return {
         content,
         source: `plugin:${pluginName}`,
@@ -321,18 +618,320 @@ ${readmeContent}
    */
   private async fetchUrlDocumentation(url: string): Promise<DocResponse> {
     try {
-      const response = await axios.get(url);
-      const content = response.data;
+      // Determine if this is a GitHub URL to handle special cases
+      const isGitHubUrl = url.includes('github.com');
+      const isGitHubRaw = url.includes('raw.githubusercontent.com');
+      
+      // Set headers to mimic a browser request
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      };
+      
+      // Fetch the content with a timeout and size limit
+      const response = await axios.get(url, { 
+        headers,
+        maxContentLength: this.options.maxFileSizeBytes || 1024 * 1024, // Default to 1MB
+        timeout: 10000 // 10 second timeout
+      });
+      
+      // Process the content based on the response
+      const extractionResult = await this.extractContentFromResponse(response, url);
+      
+      // Create metadata
+      const metadata: Record<string, any> = {
+        contentType: extractionResult.contentType,
+        url: url,
+        title: extractionResult.title || '',
+        ...extractionResult.metadata
+      };
+      
+      // For GitHub repositories, add repository info to metadata
+      if (isGitHubUrl && !isGitHubRaw) {
+        const repoInfo = this.extractGitHubRepoInfo(url);
+        if (repoInfo) {
+          metadata.repository = repoInfo;
+        }
+      }
       
       return {
-        content,
+        content: extractionResult.content,
         source: `url:${url}`,
         timestamp: Date.now(),
+        metadata
       };
     } catch (error) {
       console.error(`Failed to fetch URL documentation: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
+  }
+  
+  /**
+   * Extract content from HTTP response based on content type
+   */
+  private async extractContentFromResponse(response: any, url: string): Promise<ContentExtractionResult> {
+    // Get content type from headers
+    const contentType = response.headers['content-type'] || '';
+    const content = response.data;
+    
+    // Handle different content types
+    if (contentType.includes('text/html')) {
+      return this.extractContentFromHtml(content, url);
+    } else if (contentType.includes('application/json')) {
+      return {
+        content: typeof content === 'string' ? content : JSON.stringify(content, null, 2),
+        contentType: ContentType.JSON,
+        metadata: { jsonKeys: Object.keys(content) }
+      };
+    } else if (contentType.includes('text/markdown') || url.endsWith('.md')) {
+      return {
+        content: typeof content === 'string' ? content : String(content),
+        contentType: ContentType.MARKDOWN
+      };
+    } else if (this.isCodeFile(url)) {
+      return {
+        content: typeof content === 'string' ? content : String(content),
+        contentType: ContentType.CODE,
+        metadata: { language: this.detectLanguageFromUrl(url) }
+      };
+    } else {
+      // Default to text
+      return {
+        content: typeof content === 'string' ? content : String(content),
+        contentType: ContentType.TEXT
+      };
+    }
+  }
+  
+  /**
+   * Extract content from HTML
+   */
+  private extractContentFromHtml(html: string, url: string): ContentExtractionResult {
+    try {
+      // Use cheerio for lightweight HTML parsing
+      const $ = cheerio.load(html);
+      
+      // Extract title
+      const title = $('title').text() || '';
+      
+      // For GitHub repos, handle differently
+      if (url.includes('github.com') && !url.includes('raw.githubusercontent.com')) {
+        return this.extractGitHubContent($, url, title);
+      }
+      
+      // For documentation sites, focus on main content
+      const mainContent = this.extractMainContent($);
+      
+      // Extract all text
+      const allText = mainContent || $('body').text();
+      
+      // Clean the text
+      const cleanText = this.cleanText(allText);
+      
+      return {
+        content: cleanText,
+        contentType: ContentType.HTML,
+        title,
+        metadata: {
+          headings: $('h1, h2, h3').map((_i: number, el: any) => $(el).text()).get(),
+          links: $('a').map((_i: number, el: any) => ({
+            text: $(el).text(),
+            href: $(el).attr('href')
+          })).get()
+        }
+      };
+    } catch (error) {
+      console.error(`Error parsing HTML: ${error instanceof Error ? error.message : String(error)}`);
+      return {
+        content: html,
+        contentType: ContentType.TEXT
+      };
+    }
+  }
+  
+  /**
+   * Extract main content from HTML using heuristics
+   */
+  private extractMainContent($: cheerio.CheerioAPI): string {
+    // Try common content containers
+    const contentSelectors = [
+      'article', 'main', '.main-content', '.content', 
+      '.article', '.post-content', '.markdown-body',
+      '#readme', '.documentation', '.docs-content'
+    ];
+    
+    for (const selector of contentSelectors) {
+      const element = $(selector);
+      if (element.length > 0) {
+        return element.text();
+      }
+    }
+    
+    // Fallback: find the element with the most text
+    let maxTextElement = $('body');
+    let maxTextLength = 0;
+    
+    $('div, section').each((_i: number, el: any) => {
+      const text = $(el).text();
+      if (text.length > maxTextLength) {
+        maxTextLength = text.length;
+        maxTextElement = $(el);
+      }
+    });
+    
+    return maxTextElement.text();
+  }
+  
+  /**
+   * Clean text by removing excess whitespace
+   */
+  private cleanText(text: string): string {
+    return text
+      .replace(/\s+/g, ' ')
+      .replace(/\n+/g, '\n')
+      .trim();
+  }
+  
+  /**
+   * Check if a URL points to a code file
+   */
+  private isCodeFile(url: string): boolean {
+    const codeExtensions = [
+      '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.cs',
+      '.go', '.rb', '.php', '.swift', '.kt', '.rs', '.sh', '.bash', '.json'
+    ];
+    
+    return codeExtensions.some(ext => url.endsWith(ext));
+  }
+  
+  /**
+   * Detect programming language from URL
+   */
+  private detectLanguageFromUrl(url: string): string {
+    const extensionMap: Record<string, string> = {
+      '.js': 'javascript',
+      '.ts': 'typescript',
+      '.jsx': 'javascript',
+      '.tsx': 'typescript',
+      '.py': 'python',
+      '.java': 'java',
+      '.c': 'c',
+      '.cpp': 'cpp',
+      '.cs': 'csharp',
+      '.go': 'go',
+      '.rb': 'ruby',
+      '.php': 'php',
+      '.swift': 'swift',
+      '.kt': 'kotlin',
+      '.rs': 'rust',
+      '.sh': 'bash',
+      '.bash': 'bash',
+      '.json': 'json',
+    };
+    
+    const extension = url.substring(url.lastIndexOf('.'));
+    return extensionMap[extension] || 'unknown';
+  }
+  
+  /**
+   * Extract GitHub specific content
+   */
+  private extractGitHubContent($: cheerio.CheerioAPI, url: string, title: string): ContentExtractionResult {
+    // Extract README content
+    const readmeContent = $('.markdown-body');
+    
+    if (readmeContent.length > 0) {
+      return {
+        content: readmeContent.text(),
+        contentType: ContentType.MARKDOWN,
+        title,
+        metadata: {
+          headings: readmeContent.find('h1, h2, h3').map((_i: number, el: any) => $(el).text()).get(),
+          repository: this.extractGitHubRepoInfo(url)
+        }
+      };
+    }
+    
+    // Extract code content
+    const codeContent = $('.blob-wrapper');
+    
+    if (codeContent.length > 0) {
+      return {
+        content: codeContent.text(),
+        contentType: ContentType.CODE,
+        title,
+        metadata: {
+          language: $('.blob-code-inner').attr('data-lang') || this.detectLanguageFromUrl(url),
+          repository: this.extractGitHubRepoInfo(url)
+        }
+      };
+    }
+    
+    // Extract repository information (files, directories)
+    const files: any[] = [];
+    $('.js-navigation-container .js-navigation-item').each((_i: number, el: any) => {
+      const nameEl = $(el).find('.js-navigation-open');
+      const name = nameEl.text().trim();
+      const href = nameEl.attr('href');
+      const type = $(el).find('svg.octicon-file').length > 0 ? 'file' : 'directory';
+      
+      if (name && href) {
+        files.push({
+          name,
+          path: href,
+          type
+        });
+      }
+    });
+    
+    if (files.length > 0) {
+      return {
+        content: `Repository: ${title}\n\nFiles and Directories:\n${files.map(f => `- ${f.name} (${f.type})`).join('\n')}`,
+        contentType: ContentType.TEXT,
+        title,
+        metadata: {
+          files,
+          repository: this.extractGitHubRepoInfo(url)
+        }
+      };
+    }
+    
+    // Default extraction
+    return {
+      content: $('body').text(),
+      contentType: ContentType.TEXT,
+      title
+    };
+  }
+  
+  /**
+   * Extract GitHub repository information from URL
+   */
+  private extractGitHubRepoInfo(url: string): Record<string, string> | null {
+    // Match GitHub URL pattern
+    const repoMatch = url.match(/github\.com\/([^/]+)\/([^/]+)/);
+    
+    if (!repoMatch) {
+      return null;
+    }
+    
+    const [, owner, repo] = repoMatch;
+    
+    // Extract branch if present
+    let branch = 'main';
+    const branchMatch = url.match(/github\.com\/[^/]+\/[^/]+\/tree\/([^/]+)/);
+    
+    if (branchMatch) {
+      branch = branchMatch[1];
+    }
+    
+    return {
+      owner,
+      repo,
+      branch,
+      fullName: `${owner}/${repo}`
+    };
   }
   
   /**
@@ -420,152 +1019,173 @@ ${readmeContent}
    */
   private async scanGithubRepository(repoPath: string, params?: Record<string, string>): Promise<DocResponse> {
     try {
-      // Parse repository parameters
-      const branch = params?.branch || 'main';
-      const options: GithubScanOptions = {
-        branch,
-        fileTypes: params?.fileTypes?.split(',') || ['.ts', '.js', '.json', '.md'],
-        maxDepth: params?.maxDepth ? Number(params.maxDepth) : 3,
-        maxFiles: params?.maxFiles ? Number(params.maxFiles) : this.options.maxRepositoryFiles,
-        includePatterns: params?.includePatterns?.split(','),
-        excludePatterns: params?.excludePatterns?.split(','),
-        fetchContent: params?.fetchContent !== 'false',
-        includeDependencies: params?.includeDependencies === 'true',
-      };
+      console.log(`Found ${this.options.maxRepositoryFiles} files to scan in ${repoPath}`);
       
-      // Set up GitHub API headers
+      // Extract owner and repo
+      const [owner, repo] = repoPath.split('/');
+      
+      if (!owner || !repo) {
+        throw new Error(`Invalid repository path: ${repoPath}. Expected format: "owner/repo"`);
+      }
+      
+      // Get branch from params or default to main
+      const branch = params?.branch || 'main';
+      
+      // Define headers for GitHub API
       const headers: Record<string, string> = {
         'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'ElizaOS-MCP',
       };
       
+      // Add GitHub token if available
       if (this.options.githubApiToken) {
         headers['Authorization'] = `token ${this.options.githubApiToken}`;
       }
       
-      // First, fetch the repository contents
-      const apiUrl = `https://api.github.com/repos/${repoPath}/contents?ref=${branch}`;
-      const response = await axios.get(apiUrl, { headers });
+      // Parse options
+      const options: GithubScanOptions = {
+        branch,
+        fileTypes: params?.fileTypes ? params.fileTypes.split(',') : undefined,
+        maxDepth: params?.maxDepth ? parseInt(params.maxDepth) : 3,
+        maxFiles: params?.maxFiles ? parseInt(params.maxFiles) : this.options.maxRepositoryFiles || 100,
+        includePatterns: params?.includePatterns ? params.includePatterns.split(',') : undefined,
+        excludePatterns: params?.excludePatterns ? params.excludePatterns.split(',') : undefined,
+        fetchContent: params?.fetchContent ? params.fetchContent === 'true' : true,
+        includeDependencies: params?.includeDependencies ? params.includeDependencies === 'true' : true,
+      };
       
-      if (!Array.isArray(response.data)) {
-        throw new Error(`Expected array of files, got: ${typeof response.data}`);
+      // List repository files
+      const files = await this.listRepositoryFiles(repoPath, branch, options, headers);
+      
+      // Filter files based on options
+      const filteredFiles = files.filter(file => {
+        // Skip directories
+        if (file.type === 'dir') return false;
+        
+        // Check file types
+        if (options.fileTypes && options.fileTypes.length > 0) {
+          const extension = file.name.substring(file.name.lastIndexOf('.'));
+          if (!options.fileTypes.includes(extension)) return false;
+        }
+        
+        // Check include patterns
+        if (options.includePatterns && options.includePatterns.length > 0) {
+          if (!options.includePatterns.some(pattern => file.path.includes(pattern))) return false;
+        }
+        
+        // Check exclude patterns
+        if (options.excludePatterns && options.excludePatterns.length > 0) {
+          if (options.excludePatterns.some(pattern => file.path.includes(pattern))) return false;
+        }
+        
+        return true;
+      });
+      
+      // Fetch content for selected files (up to maxFiles)
+      const filesToFetch = filteredFiles.slice(0, options.maxFiles);
+      
+      if (filesToFetch.length === 0) {
+        return {
+          content: `No matching files found in repository ${repoPath} with the given filters.`,
+          source: `github_repo:${repoPath}`,
+          timestamp: Date.now(),
+          metadata: {
+            repository: {
+              owner,
+              repo,
+              branch
+            },
+            filesScanned: files.length,
+            filesMatched: 0
+          }
+        };
       }
       
-      // Get list of files to fetch
-      const filesToFetch = await this.listRepositoryFiles(repoPath, branch, options, headers);
-      console.log(`Found ${filesToFetch.length} files to scan in ${repoPath}`);
-      
-      // Fetch file contents if needed
+      // Fetch content if requested
       const fileContents: Record<string, string> = {};
-      const fileStructure: Record<string, any> = {};
       
       if (options.fetchContent) {
-        const maxFiles = Math.min(filesToFetch.length, options.maxFiles || this.options.maxRepositoryFiles || 100);
-        
-        for (let i = 0; i < maxFiles; i++) {
-          const file = filesToFetch[i];
-          
-          if (file.type === 'file' && file.download_url) {
-            try {
-              // Only fetch files that are not too large
-              if (!file.size || file.size <= (this.options.maxFileSizeBytes || 1024 * 1024)) {
-                const contentResponse = await axios.get(file.download_url);
-                fileContents[file.path] = contentResponse.data;
-                
-                // Add to file structure
-                this.addToFileStructure(fileStructure, file.path, {
-                  type: 'file',
-                  size: file.size,
-                  url: file.url,
-                  download_url: file.download_url,
-                });
-              } else {
-                console.warn(`Skipping large file: ${file.path} (${file.size} bytes)`);
-                
-                // Add to file structure but mark as too large
-                this.addToFileStructure(fileStructure, file.path, {
-                  type: 'file',
-                  size: file.size,
-                  url: file.url,
-                  download_url: file.download_url,
-                  skipped: 'File too large'
-                });
+        for (const file of filesToFetch) {
+          try {
+            if (file.download_url) {
+              const response = await axios.get(file.download_url, { headers });
+              
+              // Safely store the content - ensuring it's a string
+              let content = response.data;
+              if (typeof content !== 'string') {
+                content = JSON.stringify(content, null, 2);
               }
-            } catch (error) {
-              console.error(`Failed to fetch content for ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+              
+              // Limit content size to avoid memory issues
+              const maxLength = 50000; // 50KB max per file
+              fileContents[file.path] = content.length > maxLength 
+                ? content.substring(0, maxLength) + `\n... [${content.length - maxLength} more characters truncated]` 
+                : content;
             }
-          } else if (file.type === 'dir') {
-            // Add directory to structure
-            this.addToFileStructure(fileStructure, file.path, {
-              type: 'dir',
-              url: file.url
-            });
+          } catch (error) {
+            console.warn(`Failed to fetch content for ${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+            fileContents[file.path] = '// Error: Failed to fetch content for this file';
           }
         }
       }
       
-      // If this is a plugin repository, try to find package.json
+      // Build a file structure
+      const fileStructure: Record<string, any> = {};
+      
+      for (const file of filesToFetch) {
+        this.addToFileStructure(fileStructure, file.path, file);
+      }
+      
+      // Check for package.json to understand dependencies
       let packageJson = null;
-      if (fileContents['package.json']) {
+      try {
+        const packageJsonFile = filesToFetch.find(f => f.path === 'package.json');
+        if (packageJsonFile && fileContents[packageJsonFile.path]) {
+          packageJson = JSON.parse(fileContents[packageJsonFile.path]);
+        }
+      } catch (error) {
+        console.warn(`Failed to parse package.json: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      
+      // Generate a summary of the repository
+      const repositorySummary = this.generateRepositorySummary(repoPath, fileStructure, packageJson);
+      
+      // Generate code documentation if content was fetched
+      let codeDocumentation = '';
+      if (options.fetchContent && Object.keys(fileContents).length > 0) {
         try {
-          packageJson = JSON.parse(fileContents['package.json']);
+          codeDocumentation = this.generateCodeDocumentation(fileContents);
         } catch (error) {
-          console.error(`Failed to parse package.json: ${error instanceof Error ? error.message : String(error)}`);
+          console.warn(`Failed to generate code documentation: ${error instanceof Error ? error.message : String(error)}`);
+          // Provide a basic fallback
+          codeDocumentation = 'Code documentation generation failed. Please check the file contents directly.';
         }
       }
       
-      // Generate summary of the repository
-      const summary = this.generateRepositorySummary(repoPath, fileStructure, packageJson);
-      
-      // Generate code documentation
-      const codeDocumentation = this.generateCodeDocumentation(fileContents);
-      
-      // Build response content
+      // Combine information
       const content = `
-# GitHub Repository: ${repoPath}
+# Repository: ${repoPath} (${branch})
 
-## Repository Summary
-${summary}
+${repositorySummary}
 
-## File Structure
-\`\`\`
-${this.renderFileStructure(fileStructure)}
-\`\`\`
-
-## Code Documentation
-${codeDocumentation}
-
-## Package Information
-${packageJson ? `
-- **Name**: ${packageJson.name || 'N/A'}
-- **Version**: ${packageJson.version || 'N/A'}
-- **Description**: ${packageJson.description || 'N/A'}
-- **Main**: ${packageJson.main || 'N/A'}
-- **Author**: ${packageJson.author || 'N/A'}
-- **License**: ${packageJson.license || 'N/A'}
-- **Dependencies**: ${Object.keys(packageJson.dependencies || {}).length} dependencies
-- **Dev Dependencies**: ${Object.keys(packageJson.devDependencies || {}).length} dev dependencies
-` : 'No package.json found'}
-
-## Files
-${Object.keys(fileContents).map(filePath => `
-### ${filePath}
-\`\`\`${this.getLanguageFromPath(filePath)}
-${fileContents[filePath]}
-\`\`\`
-`).join('\n')}
+${codeDocumentation ? `## Code Documentation\n\n${codeDocumentation}` : ''}
 `;
-
+      
       return {
         content,
         source: `github_repo:${repoPath}`,
         timestamp: Date.now(),
         metadata: {
-          repository: `https://github.com/${repoPath}`,
-          branch,
-          fileCount: Object.keys(fileContents).length,
-          fileStructure,
-          packageJson
-        },
+          repository: {
+            owner,
+            repo,
+            branch
+          },
+          filesScanned: files.length,
+          filesAnalyzed: filesToFetch.length,
+          fileStructure: JSON.stringify(fileStructure),
+          hasPackageJson: !!packageJson
+        }
       };
     } catch (error) {
       console.error(`Failed to scan GitHub repository: ${error instanceof Error ? error.message : String(error)}`);
@@ -689,66 +1309,196 @@ ${fileContents[filePath]}
   }
   
   /**
-   * Generate a summary of the repository
+   * Generate repository summary
    */
   private generateRepositorySummary(repoPath: string, fileStructure: Record<string, any>, packageJson: any): string {
-    // Count files by type
-    const fileTypes: Record<string, number> = {};
     const countFilesByType = (structure: Record<string, any>) => {
-      for (const key in structure) {
-        const item = structure[key];
-        if (item.type === 'file') {
-          const ext = item.name.substring(item.name.lastIndexOf('.')).toLowerCase() || 'unknown';
-          fileTypes[ext] = (fileTypes[ext] || 0) + 1;
-        } else if (typeof item === 'object') {
-          countFilesByType(item);
-        }
-      }
+      const counts: Record<string, number> = {};
+      
+      const traverse = (obj: Record<string, any>) => {
+        if (!obj) return;
+        
+        Object.entries(obj).forEach(([key, value]) => {
+          if (value && typeof value === 'object') {
+            if (value.type === 'file') {
+              const extension = key.includes('.') ? key.substring(key.lastIndexOf('.')) : 'unknown';
+              counts[extension] = (counts[extension] || 0) + 1;
+            } else {
+              traverse(value);
+            }
+          }
+        });
+      };
+      
+      traverse(structure);
+      return counts;
     };
     
-    countFilesByType(fileStructure);
+    const fileCounts = countFilesByType(fileStructure);
     
-    // Generate file type stats
-    const fileTypeList = Object.entries(fileTypes)
-      .map(([ext, count]) => `- **${ext || 'No extension'}**: ${count} files`)
+    let summary = '## Repository Summary\n\n';
+    
+    // Add file counts by type
+    summary += '### File Types\n\n';
+    const fileTypes = Object.entries(fileCounts)
+      .sort((a, b) => b[1] - a[1]) // Sort by count in descending order
+      .map(([type, count]) => `- ${type}: ${count} file${count !== 1 ? 's' : ''}`)
       .join('\n');
     
-    return `
-This is a GitHub repository located at https://github.com/${repoPath}.
-
-${packageJson ? `
-The repository appears to be a ${packageJson.description ? `${packageJson.description}` : 'JavaScript/TypeScript package'}.
-` : ''}
-
-### File Types:
-${fileTypeList || 'No files found'}
-`;
+    summary += fileTypes || 'No files analyzed.';
+    
+    // Add package.json info if available
+    if (packageJson) {
+      summary += '\n\n### Package Information\n\n';
+      summary += `- Name: ${packageJson.name || 'unknown'}\n`;
+      summary += `- Version: ${packageJson.version || 'unknown'}\n`;
+      summary += `- Description: ${packageJson.description || 'No description'}\n`;
+      
+      // Add dependencies if available
+      if (packageJson.dependencies && Object.keys(packageJson.dependencies).length > 0) {
+        summary += '\n#### Dependencies\n\n';
+        const dependencies = Object.entries(packageJson.dependencies)
+          .map(([name, version]) => `- ${name}: ${version}`)
+          .join('\n');
+        summary += dependencies;
+      }
+      
+      // Add dev dependencies if available
+      if (packageJson.devDependencies && Object.keys(packageJson.devDependencies).length > 0) {
+        summary += '\n\n#### Dev Dependencies\n\n';
+        const devDependencies = Object.entries(packageJson.devDependencies)
+          .map(([name, version]) => `- ${name}: ${version}`)
+          .join('\n');
+        summary += devDependencies;
+      }
+    }
+    
+    // Add file structure
+    summary += '\n\n### File Structure\n\n';
+    summary += '```\n';
+    summary += this.renderFileStructure(fileStructure);
+    summary += '```';
+    
+    return summary;
   }
   
   /**
-   * Generate documentation from code files
+   * Generate code documentation
    */
   private generateCodeDocumentation(fileContents: Record<string, string>): string {
-    // Extract exported types, classes, functions from TypeScript files
-    const typeScriptFiles = Object.entries(fileContents)
-      .filter(([filePath]) => filePath.endsWith('.ts') || filePath.endsWith('.tsx'));
-    
-    if (typeScriptFiles.length === 0) {
-      return 'No TypeScript files found to document.';
+    if (!fileContents || Object.keys(fileContents).length === 0) {
+      return '';
     }
     
     let documentation = '';
     
-    for (const [filePath, content] of typeScriptFiles) {
-      const exported = this.extractExports(content);
-      if (exported.length > 0) {
-        documentation += `\n### Exports from ${filePath}\n`;
-        documentation += exported.map(exp => `- \`${exp.type}\` **${exp.name}**${exp.description ? `: ${exp.description}` : ''}`).join('\n');
-        documentation += '\n';
+    // Process main source files first (prefer src/index.ts if it exists)
+    const mainFiles = Object.keys(fileContents).filter(path => 
+      path.includes('index.ts') || 
+      path.includes('index.js') || 
+      path.includes('main.ts') || 
+      path.includes('main.js')
+    );
+    
+    // Then other source files
+    const sourceFiles = Object.keys(fileContents).filter(path => 
+      !mainFiles.includes(path) && 
+      (path.endsWith('.ts') || path.endsWith('.js'))
+    );
+    
+    // Then other files
+    const otherFiles = Object.keys(fileContents).filter(path => 
+      !mainFiles.includes(path) && 
+      !sourceFiles.includes(path)
+    );
+    
+    // Combine the files in priority order
+    const orderedFiles = [...mainFiles, ...sourceFiles, ...otherFiles];
+    
+    // Limit to a reasonable number of files to avoid huge outputs
+    const filesToDocument = orderedFiles.slice(0, 10);
+    
+    // Generate documentation for each file
+    for (const filePath of filesToDocument) {
+      try {
+        const content = fileContents[filePath];
+        
+        if (!content || content.trim().length === 0) {
+          continue;
+        }
+        
+        documentation += `### File: ${filePath}\n\n`;
+        
+        // Add language hint for code blocks
+        const language = this.getLanguageFromPath(filePath);
+        
+        // For source files, extract exports
+        if (filePath.endsWith('.ts') || filePath.endsWith('.js')) {
+          const exports = this.extractExports(content);
+          
+          if (exports.length > 0) {
+            documentation += '#### Exports\n\n';
+            for (const exp of exports) {
+              documentation += `- **${exp.type}** \`${exp.name}\`: ${exp.description}\n`;
+            }
+            documentation += '\n';
+          }
+          
+          // Add truncated file content (first 20 lines)
+          documentation += '#### Content Preview\n\n';
+          documentation += '```' + language + '\n';
+          
+          // Safely get the first 20 lines
+          if (content) {
+            const lines = content.split('\n');
+            const previewLines = lines.slice(0, 20);
+            documentation += previewLines.join('\n');
+            
+            if (lines.length > 20) {
+              documentation += '\n// ... additional lines truncated ...\n';
+            }
+          } else {
+            documentation += '// Content unavailable';
+          }
+          
+          documentation += '\n```\n\n';
+        } else if (filePath.endsWith('.md') || filePath.endsWith('.markdown')) {
+          // For markdown files, include content directly
+          // Trim if too long
+          const maxLength = 2000;
+          if (content && content.length > maxLength) {
+            documentation += content.substring(0, maxLength) + '\n\n... (content truncated) ...\n\n';
+          } else if (content) {
+            documentation += content + '\n\n';
+          } else {
+            documentation += '(Empty or invalid content)\n\n';
+          }
+        } else {
+          // For other files, add a preview
+          documentation += '```' + language + '\n';
+          
+          // Safely get a content preview
+          if (content) {
+            const preview = content.length > 500 ? content.substring(0, 500) + '\n// ... (truncated) ...' : content;
+            documentation += preview;
+          } else {
+            documentation += '// Content unavailable';
+          }
+          
+          documentation += '\n```\n\n';
+        }
+      } catch (error) {
+        console.warn(`Error documenting file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+        documentation += `Error documenting file ${filePath}: ${error instanceof Error ? error.message : String(error)}\n\n`;
       }
     }
     
-    return documentation || 'No significant code exports found.';
+    // If there are more files that weren't documented, add a note
+    if (orderedFiles.length > filesToDocument.length) {
+      documentation += `\n_Note: ${orderedFiles.length - filesToDocument.length} additional files were not included in this documentation._\n`;
+    }
+    
+    return documentation;
   }
   
   /**
