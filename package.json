@@ -1,0 +1,58 @@
+{
+  "name": "recall-cli",
+  "version": "0.1.0",
+  "description": "CLI tool for creating and managing crypto trading signal detection agents",
+  "main": "dist/index.js",
+  "bin": {
+    "recall-cli": "./dist/index.js"
+  },
+  "type": "module",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "ts-node --esm src/index.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "recall",
+    "cli",
+    "crypto",
+    "trading",
+    "agent",
+    "eliza",
+    "plugin"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.18.0",
+    "axios": "^1.6.7",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "conf": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "inquirer": "^9.2.15",
+    "openai": "^4.28.4",
+    "ora": "^7.0.1",
+    "simple-git": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.11.28",
+    "@typescript-eslint/eslint-plugin": "^7.2.0",
+    "@typescript-eslint/parser": "^7.2.0",
+    "eslint": "^8.57.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
+    "vitest": "^1.4.0"
+  }
+}
