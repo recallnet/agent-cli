@@ -1,16 +1,17 @@
-import chalk from 'chalk';
-import ora from 'ora';
-import inquirer from 'inquirer';
-import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
-
+import fs from 'fs';
+import ora, { Ora } from 'ora';
+import chalk from 'chalk';
+import inquirer from 'inquirer';
 import { LlmProvider } from '../llm/provider.js';
 import { McpClient } from '../mcp/client.js';
 import { PluginRegistry } from '../plugins/registry.js';
 import { buildStrategyInteractively } from '../strategy/interactive-builder.js';
 import { CharacterConfig, generateCharacterForSetup, saveCharacterConfig } from './character.js';
 import { DocResponse } from '../mcp/server.js';
+import { checkSystemPrerequisites, validateProjectStructure } from './prerequisites.js';
+import { analyzeEnvironment, generateEnvFile, extractEnvVariablesFromFiles, EnvVariable } from './environment-analyzer.js';
+import { getInstalledPlugins, checkPluginCompatibility, installPlugin, PluginInfo, updateProjectStructure } from './plugin-compatibility.js';
 
 /**
  * Setup session for tracking progress
@@ -70,7 +71,7 @@ export class AgentSetup {
   private mcpClient: McpClient;
   private pluginRegistry: PluginRegistry;
   private session: SetupSession;
-  private spinner: ora.Ora;
+  private spinner: ReturnType<typeof ora>;
   
   constructor(llmProvider: LlmProvider, mcpClient: McpClient, projectPath: string) {
     this.llmProvider = llmProvider;
@@ -203,23 +204,153 @@ export class AgentSetup {
     this.startStep('project-validation');
     
     try {
-      // Check for package.json
-      const packageJsonPath = path.join(this.session.projectPath, 'package.json');
-      if (!fs.existsSync(packageJsonPath)) {
-        throw new Error('Invalid project: package.json not found. Make sure you are in a valid project directory.');
+      // Check system prerequisites
+      const spinner = ora('Checking system prerequisites...').start();
+      const prerequisites = await checkSystemPrerequisites();
+      
+      if (!prerequisites.allSatisfied) {
+        spinner.fail('System prerequisites check failed');
+        
+        console.log(chalk.yellow('\nThe following system requirements need to be addressed:'));
+        for (const result of prerequisites.results.filter(r => !r.satisfied)) {
+          console.log(chalk.red(`• ${result.name}: ${result.message}`));
+          if (result.installCommand) {
+            console.log(chalk.gray(`  To install or update, run: ${result.installCommand}`));
+          }
+        }
+        
+        // Ask user if they want to continue anyway
+        const { continueDespitePrerequisites } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'continueDespitePrerequisites',
+            message: 'Do you want to continue anyway? (Some features may not work correctly)',
+            default: false
+          }
+        ]);
+        
+        if (!continueDespitePrerequisites) {
+          throw new Error('Setup aborted: system prerequisites not satisfied');
+        }
+      } else {
+        spinner.succeed('System prerequisites satisfied');
+        
+        console.log(chalk.green('\nDetected:'));
+        for (const result of prerequisites.results) {
+          console.log(chalk.green(`• ${result.name}: ${result.version || 'Installed'}`));
+        }
       }
       
-      // Check for Node.js and npm/pnpm
-      try {
-        execSync('node --version', { stdio: 'ignore' });
-        // Try pnpm first, fall back to npm
-        try {
-          execSync('pnpm --version', { stdio: 'ignore' });
-        } catch (error) {
-          execSync('npm --version', { stdio: 'ignore' });
+      // Validate project structure
+      spinner.text = 'Validating project structure...';
+      spinner.start();
+      
+      const structureResult = validateProjectStructure(this.session.projectPath);
+      
+      if (!structureResult.valid) {
+        spinner.fail('Project structure validation failed');
+        
+        console.log(chalk.yellow('\nThe following issues were found in your project structure:'));
+        for (const issue of structureResult.issues) {
+          console.log(chalk.red(`• ${issue}`));
         }
-      } catch (error) {
-        throw new Error('Required tools not found. Please make sure Node.js and npm/pnpm are installed.');
+        
+        // If there are missing directories or files, offer to create them
+        if (structureResult.missingDirectories.length > 0 || structureResult.missingFiles.length > 0) {
+          const { fixStructure } = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'fixStructure',
+              message: 'Do you want to fix the project structure by creating missing directories and files?',
+              default: true
+            }
+          ]);
+          
+          if (fixStructure) {
+            spinner.text = 'Fixing project structure...';
+            spinner.start();
+            
+            // Create missing directories
+            for (const dir of structureResult.missingDirectories) {
+              const dirPath = path.join(this.session.projectPath, dir);
+              fs.mkdirSync(dirPath, { recursive: true });
+            }
+            
+            // Create missing files (with minimal content)
+            for (const file of structureResult.missingFiles) {
+              const filePath = path.join(this.session.projectPath, file);
+              
+              // Create parent directory if it doesn't exist
+              const directory = path.dirname(filePath);
+              if (!fs.existsSync(directory)) {
+                fs.mkdirSync(directory, { recursive: true });
+              }
+              
+              // Create empty files or with minimal content based on file type
+              if (file === 'package.json' && !fs.existsSync(filePath)) {
+                const projectName = path.basename(this.session.projectPath);
+                const packageJson = {
+                  name: projectName,
+                  version: '0.1.0',
+                  description: 'Recall trading agent',
+                  main: 'dist/index.js',
+                  type: 'module',
+                  scripts: {
+                    build: 'tsc',
+                    start: 'node dist/index.js'
+                  },
+                  dependencies: {
+                    '@elizaos/core': 'latest',
+                    '@elizaos/agent': 'latest'
+                  }
+                };
+                fs.writeFileSync(filePath, JSON.stringify(packageJson, null, 2));
+              } else if (file === 'tsconfig.json' && !fs.existsSync(filePath)) {
+                const tsconfig = {
+                  compilerOptions: {
+                    target: 'ES2020',
+                    module: 'NodeNext',
+                    moduleResolution: 'NodeNext',
+                    esModuleInterop: true,
+                    outDir: './dist',
+                    strict: true
+                  },
+                  include: ['src/**/*']
+                };
+                fs.writeFileSync(filePath, JSON.stringify(tsconfig, null, 2));
+              } else if (!fs.existsSync(filePath)) {
+                // Create empty file
+                fs.writeFileSync(filePath, '');
+              }
+            }
+            
+            spinner.succeed('Project structure fixed');
+          } else {
+            throw new Error('Setup aborted: project structure issues not fixed');
+          }
+        } else {
+          throw new Error('Setup aborted: invalid project structure');
+        }
+      } else {
+        spinner.succeed('Project structure is valid');
+      }
+      
+      // Get installed plugins to enhance setup context
+      spinner.text = 'Analyzing existing plugins...';
+      spinner.start();
+      
+      const installedPlugins = await getInstalledPlugins(this.session.projectPath);
+      if (installedPlugins.length > 0) {
+        spinner.succeed(`Found ${installedPlugins.length} installed plugins`);
+        this.session.installedPlugins = installedPlugins.map(p => p.name);
+        
+        console.log(chalk.cyan('\nInstalled plugins:'));
+        for (const plugin of installedPlugins) {
+          console.log(chalk.green(`• ${plugin.name} (${plugin.version})`));
+        }
+      } else {
+        spinner.succeed('No existing plugins found');
+        this.session.installedPlugins = [];
       }
       
       this.completeStep('project-validation');
@@ -603,64 +734,143 @@ Keep it clear and detailed but concise (less than 300 words).`;
     
     try {
       if (!this.session.selectedPlugins || this.session.selectedPlugins.length === 0) {
+        console.log(chalk.gray('No plugins selected for installation.'));
         this.skipStep('plugin-installation');
         return;
       }
       
       console.log(chalk.cyan('\n📦 Installing Plugins\n'));
+      console.log(chalk.white(`Installing ${this.session.selectedPlugins.length} plugins...`));
       
-      for (const plugin of this.session.selectedPlugins) {
-        try {
-          this.spinner.start(`Installing ${chalk.cyan(plugin)}...`);
-          
-          // Get plugin info
-          const pluginInfo = await this.pluginRegistry.getPlugin(plugin);
-          
-          if (!pluginInfo) {
-            this.spinner.warn(`Plugin ${chalk.yellow(plugin)} not found in registry. Skipping.`);
-            continue;
+      // Get plugin registry data (plugins already installed and plugin definitions)
+      const spinner = ora('Checking plugin compatibility...').start();
+      
+      // Create a dummy plugin registry for compatibility checks
+      const installedPlugins: PluginInfo[] = await getInstalledPlugins(this.session.projectPath);
+      
+      // Convert to pluginInfo map for compatibility check
+      const pluginRegistry: Record<string, PluginInfo> = {};
+      
+      // Get plugin information from registry (this would come from a real plugin registry in production)
+      for (const pluginName of this.session.selectedPlugins) {
+        pluginRegistry[pluginName] = {
+          name: pluginName,
+          version: 'latest',
+          description: 'Plugin for crypto trading',
+          dependencies: [],
+          installCommand: `pnpm add ${pluginName}`,
+          capabilities: []
+        };
+      }
+      
+      // Check compatibility for each plugin
+      const compatibilityResults = await Promise.all(
+        this.session.selectedPlugins.map(pluginName => 
+          checkPluginCompatibility(pluginName, installedPlugins, pluginRegistry)
+        )
+      );
+      
+      // Check for any conflicts
+      const conflicts = compatibilityResults.filter(result => !result.compatible);
+      
+      if (conflicts.length > 0) {
+        spinner.fail('Plugin compatibility issues detected');
+        
+        console.log(chalk.yellow('\nThe following plugins have compatibility issues:'));
+        for (const conflict of conflicts) {
+          console.log(chalk.red(`\n• ${conflict.plugin.name}:`));
+          for (const issue of conflict.conflicts) {
+            console.log(chalk.red(`  - Conflict with ${issue.plugin}: ${issue.reason}`));
           }
           
-          // Install the plugin
-          await this.pluginRegistry.installPlugin(plugin);
-          
-          this.spinner.succeed(`Installed ${chalk.green(plugin)}`);
-          
-          // Add to installed plugins
-          this.session.installedPlugins.push(plugin);
-          
-          // Check for required environment variables
-          if (pluginInfo.requiredEnv && pluginInfo.requiredEnv.length > 0) {
-            console.log(chalk.yellow(`\nPlugin ${plugin} requires the following environment variables:`));
-            
-            for (const env of pluginInfo.requiredEnv) {
-              console.log(chalk.yellow(`  - ${env}`));
-              
-              // Store for later environment configuration
-              if (!this.session.requiredEnvironmentVars) {
-                this.session.requiredEnvironmentVars = {};
-              }
-              
-              if (!this.session.requiredEnvironmentVars[plugin]) {
-                this.session.requiredEnvironmentVars[plugin] = [];
-              }
-              
-              this.session.requiredEnvironmentVars[plugin].push(env);
+          if (conflict.recommendations.length > 0) {
+            console.log(chalk.cyan('\n  Recommendations:'));
+            for (const recommendation of conflict.recommendations) {
+              console.log(chalk.cyan(`  - ${recommendation}`));
             }
-            
-            console.log(''); // Add a blank line
           }
-        } catch (error) {
-          this.spinner.fail(`Failed to install ${chalk.red(plugin)}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        
+        // Ask if they want to continue anyway
+        const { continueWithConflicts } = await inquirer.prompt([
+          {
+            type: 'confirm',
+            name: 'continueWithConflicts',
+            message: 'Do you want to continue with installation despite compatibility issues?',
+            default: false
+          }
+        ]);
+        
+        if (!continueWithConflicts) {
+          throw new Error('Plugin installation aborted due to compatibility issues');
+        }
+        
+        console.log(chalk.yellow('\nContinuing with installation despite compatibility issues...'));
+      } else {
+        spinner.succeed('All plugins are compatible');
+      }
+      
+      // Install plugins one by one
+      const installedPluginNames: string[] = [];
+      const failedPlugins: { name: string; error: string }[] = [];
+      
+      for (const pluginName of this.session.selectedPlugins) {
+        const result = await installPlugin(pluginName, this.session.projectPath);
+        
+        if (result.success) {
+          installedPluginNames.push(pluginName);
+        } else {
+          failedPlugins.push({
+            name: pluginName,
+            error: result.error || 'Unknown error'
+          });
         }
       }
       
+      // Update project structure based on installed plugins
+      if (installedPluginNames.length > 0) {
+        spinner.text = 'Updating project structure...';
+        spinner.start();
+        
+        // Convert installed plugins to PluginInfo format
+        const newlyInstalledPlugins = await getInstalledPlugins(this.session.projectPath);
+        
+        // Update project structure
+        const structureResult = updateProjectStructure(this.session.projectPath, newlyInstalledPlugins);
+        
+        if (structureResult.success) {
+          spinner.succeed(`Updated project structure for plugins (${structureResult.updatedFiles.length} files modified)`);
+          
+          if (structureResult.updatedFiles.length > 0) {
+            console.log(chalk.gray('\nUpdated files:'));
+            for (const file of structureResult.updatedFiles) {
+              console.log(chalk.gray(`• ${file}`));
+            }
+          }
+        } else {
+          spinner.fail(`Failed to update project structure: ${structureResult.error}`);
+          console.log(chalk.yellow('You may need to manually integrate plugins into your project structure'));
+        }
+      }
+      
+      // Show installation summary
+      console.log(chalk.green(`\n✅ Successfully installed ${installedPluginNames.length} plugins`));
+      
+      if (failedPlugins.length > 0) {
+        console.log(chalk.red(`\n⚠️ Failed to install ${failedPlugins.length} plugins:`));
+        for (const failed of failedPlugins) {
+          console.log(chalk.red(`• ${failed.name}: ${failed.error}`));
+        }
+      }
+      
+      // Update session
+      this.session.installedPlugins = [...(this.session.installedPlugins || []), ...installedPluginNames];
       this.saveSession();
+      
       this.completeStep('plugin-installation');
     } catch (error) {
       this.failStep('plugin-installation', error instanceof Error ? error.message : String(error));
-      console.warn(`Plugin installation failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(chalk.yellow('Continuing without installing plugins...'));
+      throw error;
     }
   }
   
@@ -671,31 +881,27 @@ Keep it clear and detailed but concise (less than 300 words).`;
     this.startStep('strategy-creation');
     
     try {
-      console.log(chalk.cyan('\n📈 Building Your Trading Strategy\n'));
+      console.log(chalk.cyan('\n🚀 Building Your Trading Strategy\n'));
       
-      // Collect information for the strategy builder
-      const builderOptions = {
-        outputFormat: 'standard' as const,
+      // Generate strategy based on trading goals
+      this.spinner.start('Generating trading strategy...');
+      
+      const strategy = await buildStrategyInteractively({
+        outputFormat: 'standard',
         interactive: true,
+        strategyName: this.session.tradingGoalsAnalysis?.strategyType || 'Trading Strategy',
+        description: this.session.tradingGoals || 'A trading strategy for crypto markets',
+        timeframes: this.session.tradingGoalsAnalysis?.timeframes || [],
+        indicators: this.session.tradingGoalsAnalysis?.indicators || [],
         targetPlugins: this.session.installedPlugins || [],
-        outputDir: path.join(this.session.projectPath, 'strategies'),
-        strategyName: this.session.tradingGoalsAnalysis?.strategyType 
-          ? `${this.session.tradingGoalsAnalysis.strategyType.charAt(0).toUpperCase() + this.session.tradingGoalsAnalysis.strategyType.slice(1)} Strategy` 
-          : undefined,
-        timeframes: this.session.tradingGoalsAnalysis?.timeframes,
-        indicators: this.session.tradingGoalsAnalysis?.indicators
-      };
+        outputDir: path.join(this.session.projectPath, 'strategies')
+      });
       
-      // Launch the interactive strategy builder
-      console.log(chalk.gray('Starting the interactive strategy builder...\n'));
+      this.spinner.succeed('Trading strategy generated');
       
-      const result = await buildStrategyInteractively(builderOptions);
-      
-      // Store the strategy
-      this.session.strategy = result.strategy;
-      this.session.strategyImplementation = result.implementation;
-      
-      // Save the session
+      // Save the strategy
+      this.session.strategy = strategy.strategy;
+      this.session.strategyImplementation = strategy.implementation;
       this.saveSession();
       
       this.completeStep('strategy-creation');
@@ -706,7 +912,7 @@ Keep it clear and detailed but concise (less than 300 words).`;
   }
   
   /**
-   * Step 7: Create agent character
+   * Step 7: Create character
    */
   private async createCharacter(): Promise<void> {
     this.startStep('character-creation');
@@ -714,98 +920,16 @@ Keep it clear and detailed but concise (less than 300 words).`;
     try {
       console.log(chalk.cyan('\n👤 Creating Your Agent Character\n'));
       
-      // Base character on strategy
-      const strategyInfo = this.session.strategy ? 
-        `Strategy: ${this.session.strategy.name}\nDescription: ${this.session.strategy.description}` :
-        'A trading strategy agent';
+      // Generate character based on trading strategy and trading goals
+      this.spinner.start('Generating character description...');
       
-      // Create a character generation context
-      const context = `
-Trading Goals: ${this.session.tradingGoals || 'Not specified'}
-
-${strategyInfo}
-
-Installed Plugins: ${this.session.installedPlugins?.join(', ') || 'None'}
-`;
+      const tradingGoalsContext = this.session.tradingGoals || 'Trading cryptocurrencies based on market signals';
+      const character = await generateCharacterForSetup(tradingGoalsContext, this.llmProvider);
       
-      this.spinner.start('Generating character suggestion...');
-      
-      // Generate character
-      const character = await generateCharacterForSetup(context, this.llmProvider);
-      
-      this.spinner.succeed('Character generated');
-      
-      // Customize the character if desired
-      console.log(chalk.cyan('\nSuggested Character:\n'));
-      console.log(chalk.white(`Name: ${character.name}`));
-      console.log(chalk.white(`Role: ${character.role}`));
-      console.log(chalk.white(`Description: ${character.description}`));
-      console.log(chalk.white(`Persona: ${character.persona}`));
-      
-      // Allow for editing
-      const { customize } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'customize',
-          message: 'Would you like to customize this character?',
-          default: false
-        }
-      ]);
-      
-      if (customize) {
-        const { name, role, description, persona } = await inquirer.prompt([
-          {
-            type: 'input',
-            name: 'name',
-            message: 'Character name:',
-            default: character.name
-          },
-          {
-            type: 'input',
-            name: 'role',
-            message: 'Character role:',
-            default: character.role
-          },
-          {
-            type: 'input',
-            name: 'description',
-            message: 'Character description:',
-            default: character.description
-          },
-          {
-            type: 'editor',
-            name: 'persona',
-            message: 'Character persona:',
-            default: character.persona
-          }
-        ]);
-        
-        character.name = name;
-        character.role = role;
-        character.description = description;
-        character.persona = persona;
-      }
-      
-      // Add installed plugins
-      character.plugins = this.session.installedPlugins || [];
-      
-      // Store the character
-      this.session.character = character;
+      this.spinner.succeed('Character description generated');
       
       // Save the character
-      const characterPath = path.join(this.session.projectPath, 'characters');
-      if (!fs.existsSync(characterPath)) {
-        fs.mkdirSync(characterPath, { recursive: true });
-      }
-      
-      const safeName = character.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-      const characterFile = path.join(characterPath, `${safeName}.json`);
-      
-      await saveCharacterConfig(character, characterFile);
-      
-      console.log(chalk.green(`\nCharacter saved to ${characterFile}`));
-      
-      // Save the session
+      this.session.character = character;
       this.saveSession();
       
       this.completeStep('character-creation');
@@ -816,84 +940,32 @@ Installed Plugins: ${this.session.installedPlugins?.join(', ') || 'None'}
   }
   
   /**
-   * Step 8: Configure environment variables
+   * Step 8: Configure environment
    */
   private async configureEnvironment(): Promise<void> {
     this.startStep('environment-configuration');
     
     try {
-      console.log(chalk.cyan('\n🔧 Environment Configuration\n'));
+      console.log(chalk.cyan('\n🌐 Configuring Environment\n'));
       
-      // Check for required environment variables
-      if (!this.session.requiredEnvironmentVars || Object.keys(this.session.requiredEnvironmentVars).length === 0) {
-        console.log(chalk.gray('No required environment variables identified.'));
-        this.skipStep('environment-configuration');
-        return;
-      }
+      // Configure environment variables
+      const envAnalysis = analyzeEnvironment(this.session.projectPath, this.session.installedPlugins || []);
       
-      console.log(chalk.white('The following environment variables are required for your plugins:'));
-      
+      // Extract environment variables from analysis
       const envVars: Record<string, string> = {};
-      
-      // Collect all required environment variables
-      for (const [plugin, vars] of Object.entries(this.session.requiredEnvironmentVars)) {
-        console.log(chalk.cyan(`\n${plugin}:`));
-        
-        for (const env of vars) {
-          console.log(chalk.white(`  - ${env}`));
-          
-          // Ask for value
-          const { value } = await inquirer.prompt([
-            {
-              type: 'input',
-              name: 'value',
-              message: `Enter value for ${env}:`,
-              validate: (input) => input.trim().length > 0 ? true : 'This value is required'
-            }
-          ]);
-          
-          envVars[env] = value;
+      for (const variable of envAnalysis.availableVariables) {
+        if (variable.value) {
+          envVars[variable.name] = variable.value;
         }
       }
       
-      // Save to .env file
-      const envPath = path.join(this.session.projectPath, '.env');
-      let envContent = '';
-      
-      // Read existing .env if it exists
-      if (fs.existsSync(envPath)) {
-        envContent = fs.readFileSync(envPath, 'utf8');
-      }
-      
-      // Add new variables
-      for (const [key, value] of Object.entries(envVars)) {
-        const envLine = `${key}=${value}`;
-        
-        // Check if already exists
-        const regex = new RegExp(`^${key}=.*$`, 'm');
-        if (regex.test(envContent)) {
-          // Replace existing line
-          envContent = envContent.replace(regex, envLine);
-        } else {
-          // Add new line
-          envContent += `\n${envLine}`;
-        }
-      }
-      
-      // Write to .env file
-      fs.writeFileSync(envPath, envContent.trim() + '\n');
-      
-      console.log(chalk.green('\nEnvironment variables saved to .env file'));
-      
-      // Store in session
       this.session.environment = envVars;
       this.saveSession();
       
       this.completeStep('environment-configuration');
     } catch (error) {
       this.failStep('environment-configuration', error instanceof Error ? error.message : String(error));
-      console.warn(`Environment configuration failed: ${error instanceof Error ? error.message : String(error)}`);
-      console.log(chalk.yellow('Continuing without environment configuration...'));
+      throw error;
     }
   }
   

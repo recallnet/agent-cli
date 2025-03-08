@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import path from 'path';
 import fs from 'fs';
-import { buildStrategyInteractively } from '../strategy/interactive-builder.js';
+import { buildStrategyInteractively, InteractiveBuilderOptions } from '../strategy/interactive-builder.js';
 import { StrategyType } from '../strategy/generator.js';
 
 /**
@@ -15,8 +15,8 @@ export async function buildStrategy(options: any) {
     const outputPath = options.output || process.cwd();
     
     // Set up options for the strategy builder
-    const builderOptions = {
-      outputFormat: options.starterKit ? 'starter-kit' as const : 'standard' as const,
+    const builderOptions: InteractiveBuilderOptions = {
+      outputFormat: 'standard',
       interactive: true,
       targetPlugins: options.plugins ? options.plugins.split(',') : undefined
     };
@@ -42,17 +42,16 @@ export async function buildStrategy(options: any) {
     
     // Save the strategy implementation
     const strategyCodePath = path.join(strategyDir, `${safeName}.ts`);
-    fs.writeFileSync(strategyCodePath, result.implementation.code);
+    fs.writeFileSync(strategyCodePath, result.implementation);
     
-    // Save the session history for future reference
+    // Save a simple session history
+    const sessionData = {
+      strategy: result.strategy.name,
+      timestamp: new Date().toISOString(),
+      parameters: result.strategy.parameters
+    };
     const sessionHistoryPath = path.join(strategyDir, `${safeName}-session.json`);
-    fs.writeFileSync(sessionHistoryPath, JSON.stringify(result.session, null, 2));
-    
-    // If starter kit format, save the config
-    if (result.starterKitConfig) {
-      const configPath = path.join(strategyDir, `${safeName}-config.json`);
-      fs.writeFileSync(configPath, JSON.stringify(result.starterKitConfig, null, 2));
-    }
+    fs.writeFileSync(sessionHistoryPath, JSON.stringify(sessionData, null, 2));
     
     spinner.succeed('Strategy saved successfully');
     
@@ -60,9 +59,6 @@ export async function buildStrategy(options: any) {
     console.log(chalk.cyan(`- Strategy JSON: ${strategyJsonPath}`));
     console.log(chalk.cyan(`- Strategy Code: ${strategyCodePath}`));
     console.log(chalk.cyan(`- Session History: ${sessionHistoryPath}`));
-    if (result.starterKitConfig) {
-      console.log(chalk.cyan(`- Starter Kit Config: ${path.join(strategyDir, `${safeName}-config.json`)}`));
-    }
     
     console.log(chalk.green('\nNext steps:'));
     console.log(chalk.white('1. Review and edit the strategy code if needed'));

@@ -1,0 +1,71 @@
+{
+  "id": "setup-1741401059781",
+  "projectPath": "/Users/markkrasner/recall-cli/test-agent",
+  "startTime": "2025-03-08T02:30:59.781Z",
+  "status": "in-progress",
+  "steps": [
+    {
+      "id": "project-validation",
+      "name": "Project Validation",
+      "description": "Validating project structure and environment",
+      "status": "completed",
+      "startTime": "2025-03-08T02:30:59.782Z",
+      "endTime": "2025-03-08T02:31:00.034Z"
+    },
+    {
+      "id": "trading-goals",
+      "name": "Trading Goals",
+      "description": "Understanding your trading objectives",
+      "status": "in-progress",
+      "startTime": "2025-03-08T02:31:00.034Z"
+    },
+    {
+      "id": "competition-analysis",
+      "name": "Competition Analysis",
+      "description": "Analyzing competition requirements (if applicable)",
+      "status": "pending"
+    },
+    {
+      "id": "plugin-recommendation",
+      "name": "Plugin Recommendation",
+      "description": "Recommending plugins based on your trading goals",
+      "status": "pending"
+    },
+    {
+      "id": "plugin-installation",
+      "name": "Plugin Installation",
+      "description": "Installing selected plugins",
+      "status": "pending"
+    },
+    {
+      "id": "strategy-creation",
+      "name": "Strategy Creation",
+      "description": "Building your trading strategy",
+      "status": "pending"
+    },
+    {
+      "id": "character-creation",
+      "name": "Character Creation",
+      "description": "Creating your agent character",
+      "status": "pending"
+    },
+    {
+      "id": "environment-configuration",
+      "name": "Environment Configuration",
+      "description": "Setting up environment variables",
+      "status": "pending"
+    },
+    {
+      "id": "agent-finalization",
+      "name": "Agent Finalization",
+      "description": "Finalizing your trading agent",
+      "status": "pending"
+    }
+  ],
+  "currentStep": 1,
+  "environment": {},
+  "installedPlugins": [
+    "@elizaos/core",
+    "@elizaos/agent"
+  ]
+}
