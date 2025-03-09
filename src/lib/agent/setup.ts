@@ -997,9 +997,12 @@ Keep it clear and detailed but concise (less than 300 words).`;
       // Generate strategy based on trading goals
       this.spinner.start('Generating trading strategy...');
       
+      // Temporarily pause the spinner during character enhancement to prevent console conflicts
+      this.spinner.stop();
+      
       const strategy = await buildStrategyInteractively({
         outputFormat: 'standard',
-        interactive: true,
+        interactive: false,
         strategyName: this.session.tradingGoalsAnalysis?.strategyType || 'Trading Strategy',
         description: this.session.tradingGoals || 'A trading strategy for crypto markets',
         timeframes: this.session.tradingGoalsAnalysis?.timeframes || [],
@@ -1007,6 +1010,9 @@ Keep it clear and detailed but concise (less than 300 words).`;
         targetPlugins: this.session.installedPlugins || [],
         outputDir: path.join(this.session.projectPath, 'strategies')
       });
+      
+      // Restart the spinner after character enhancement
+      this.spinner.start('Finalizing strategy generation...');
       
       this.spinner.succeed('Trading strategy generated');
       

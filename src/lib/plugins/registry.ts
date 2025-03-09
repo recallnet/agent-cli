@@ -476,22 +476,4 @@ export class PluginRegistry {
     await visit(plugin.name);
     return result;
   }
-  
-  /**
-   * Build a basic plugin list from the Eliza docs site
-   * This is a fallback method when the registry is not available
-   */
-  private async buildPluginListFromDocs(): Promise<Record<string, PluginInfo>> {
-    try {
-      console.log('Building plugin list from dynamic sources...');
-      
-      // No hardcoded plugin list - we'll return an empty object
-      // and let the system discover plugins dynamically
-      this.plugins = {};
-      return this.plugins;
-    } catch (error) {
-      console.error('Error building plugin list:', error);
-      throw error;
-    }
-  }
 } 

@@ -7,6 +7,22 @@ import path from 'path';
 import { LlmProviderFactory } from '../llm/provider.js';
 import { McpClient } from '../mcp/client.js';
 import { PluginRegistry } from '../plugins/registry.js';
+import { LlmProvider } from '../llm/provider.js';
+import { updateCharacterWithStrategy } from './character-updater.js';
+
+/**
+ * Extract a JSON string from text that may contain additional content
+ */
+function extractJsonFromText(text: string): string | null {
+  const jsonStart = text.indexOf('{');
+  const jsonEnd = text.lastIndexOf('}') + 1;
+  
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    return text.substring(jsonStart, jsonEnd);
+  }
+  
+  return null;
+}
 
 /**
  * Options for building a strategy interactively
@@ -38,6 +54,42 @@ export interface InteractiveBuilderResult {
 }
 
 /**
+ * Enhance the trading character with strategy details
+ */
+async function enhanceCharacterForTrading(
+  projectPath: string, 
+  strategy: any, 
+  _llmProvider: LlmProvider
+): Promise<void> {
+  console.log(chalk.blue('🧠 Updating character with trading expertise...'));
+  
+  // Convert our strategy object to match the expected TradingStrategy interface
+  const tradingStrategy = {
+    name: strategy.name,
+    type: 'technical', // Default to technical if not provided
+    assets: strategy.assets || ['BTC', 'ETH'], // Default to common crypto assets
+    timeframes: strategy.timeframes || [],
+    riskProfile: strategy.riskProfile || 'moderate', // Default risk profile
+    indicators: strategy.indicators || [],
+    description: strategy.description
+  };
+  
+  // Get McpClient for passing to updateCharacterWithStrategy
+  const mcpClient = new McpClient();
+  
+  // Update the character file with trading expertise
+  const success = await updateCharacterWithStrategy(
+    projectPath,
+    tradingStrategy,
+    mcpClient
+  );
+  
+  if (!success) {
+    console.log(chalk.yellow('⚠️ Character enhancement was not fully completed. You may need to manually update the character file.'));
+  }
+}
+
+/**
  * Build a trading strategy interactively with LLM assistance
  */
 export async function buildStrategyInteractively(options: InteractiveBuilderOptions): Promise<InteractiveBuilderResult> {
@@ -54,8 +106,8 @@ export async function buildStrategyInteractively(options: InteractiveBuilderOpti
     const pluginRegistry = new PluginRegistry();
     spinner.succeed('Strategy builder initialized');
     
-    // Get plugin documentation for relevant plugins
-    spinner.start('Fetching plugin documentation...');
+    // First, let's modify the plugin documentation fetching to only get basic info
+    spinner.start('Fetching basic plugin information...');
     const pluginDocs = [];
     
     if (options.targetPlugins && options.targetPlugins.length > 0) {
@@ -63,20 +115,74 @@ export async function buildStrategyInteractively(options: InteractiveBuilderOpti
         try {
           const pluginInfo = await pluginRegistry.getPlugin(pluginName);
           if (pluginInfo) {
+            // Only store the name and basic description - not the full documentation
             pluginDocs.push({
               name: pluginName,
               description: pluginInfo.description,
-              version: pluginInfo.version,
-              documentation: pluginInfo.documentation || 'No documentation available'
+              version: pluginInfo.version
             });
           }
         } catch (error) {
-          console.warn(`Failed to get documentation for plugin ${pluginName}`);
+          console.warn(`Failed to get information for plugin ${pluginName}`);
         }
       }
     }
     
-    spinner.succeed(`Fetched documentation for ${pluginDocs.length} plugins`);
+    spinner.succeed(`Identified ${pluginDocs.length} plugins for integration`);
+    
+    // Now let's modify the indicator extraction to be more lightweight
+    let availableIndicators: string[] = [];
+    
+    if (pluginDocs.length > 0) {
+      // Create a simple list of plugin names and descriptions
+      const pluginList = pluginDocs.map(plugin => 
+        `${plugin.name}: ${plugin.description}`
+      ).join('\n');
+      
+      const indicatorPrompt = `
+You are creating a crypto trading strategy for cryptocurrency trading.
+The user wants to use these technical indicators: ${options.indicators?.join(', ') || 'RSI, MACD, Moving Averages'}.
+The strategy should focus on common timeframes like ${options.timeframes?.join(', ') || '1h, 4h, daily'}.
+
+The strategy will need to work with these plugins:
+${pluginList}
+
+Based on this information, list 5-10 relevant technical indicators that would work well in this strategy.
+Format your response ONLY as a JSON array of strings: ["Indicator1", "Indicator2", ...]`;
+      
+      try {
+        // Add a timeout to prevent hanging
+        const timeoutMs = 30000; // 30 seconds
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Indicator extraction timed out')), timeoutMs)
+        );
+        
+        const responsePromise = llmProvider.prompt(indicatorPrompt, {
+          temperature: 0.3,
+          maxTokens: 1000
+        });
+        
+        // Race the response against the timeout
+        const response = await Promise.race([responsePromise, timeoutPromise]) as any;
+        
+        // Extract JSON array from response
+        const jsonStart = response.content.indexOf('[');
+        const jsonEnd = response.content.lastIndexOf(']') + 1;
+        
+        if (jsonStart >= 0 && jsonEnd > jsonStart) {
+          const jsonString = response.content.substring(jsonStart, jsonEnd);
+          const extractedIndicators = JSON.parse(jsonString);
+          
+          if (Array.isArray(extractedIndicators) && extractedIndicators.length > 0) {
+            availableIndicators = extractedIndicators;
+          }
+        }
+      } catch (error) {
+        console.warn('Could not extract indicators automatically - using defaults');
+        // Use default indicators if extraction fails
+        availableIndicators = ['RSI', 'MACD', 'Moving Average', 'Bollinger Bands', 'Stochastic Oscillator'];
+      }
+    }
     
     // Define strategy base from options or interactive prompts
     let strategy: InteractiveBuilderResult['strategy'];
@@ -121,65 +227,10 @@ export async function buildStrategyInteractively(options: InteractiveBuilderOpti
       ]);
       
       // Get indicators based on available plugins or let user input
-      let availableIndicators: string[] = [];
-      
-      if (pluginDocs.length > 0) {
-        // If we have plugin info, suggest indicators based on them
-        spinner.start('Analyzing available plugins for indicators...');
-        
-        const pluginContext = pluginDocs.map(plugin => 
-          `Plugin: ${plugin.name}\nDescription: ${plugin.description}\nDocumentation: ${plugin.documentation}`
-        ).join('\n\n');
-        
-        const indicatorPrompt = `
-Based on the following plugin documentation, identify relevant technical indicators that could be used in a trading strategy:
-
-${pluginContext}
-
-Extract a list of technical indicators from these plugins. 
-Only list indicators that are actually available in these plugins, don't make anything up.
-Format your response as a JSON array of strings: ["Indicator1", "Indicator2", ...]`;
-        
-        try {
-          const response = await llmProvider.prompt(indicatorPrompt);
-          
-          // Extract JSON array from response
-          const jsonStart = response.content.indexOf('[');
-          const jsonEnd = response.content.lastIndexOf(']') + 1;
-          
-          if (jsonStart >= 0 && jsonEnd > jsonStart) {
-            const jsonString = response.content.substring(jsonStart, jsonEnd);
-            const extractedIndicators = JSON.parse(jsonString);
-            
-            if (Array.isArray(extractedIndicators) && extractedIndicators.length > 0) {
-              availableIndicators = extractedIndicators;
-            }
-          }
-        } catch (error) {
-          console.warn('Failed to extract indicators from plugins');
-        }
-        
-        spinner.succeed('Analyzed plugins for indicators');
-      }
-      
-      // If we couldn't get indicators from plugins, use a default set
-      if (availableIndicators.length === 0) {
-        availableIndicators = [
-          'RSI (Relative Strength Index)',
-          'MACD (Moving Average Convergence Divergence)',
-          'Bollinger Bands',
-          'Moving Average (Simple)',
-          'Moving Average (Exponential)',
-          'Stochastic Oscillator',
-          'Volume',
-          'ATR (Average True Range)',
-          'Ichimoku Cloud',
-          'OBV (On-Balance Volume)'
-        ];
-      }
+      let finalIndicators = [...availableIndicators];
       
       // Add option for custom indicator
-      availableIndicators.push('Custom (specify your own)');
+      finalIndicators.push('Custom (specify your own)');
       
       // Select indicators
       const { selectedIndicators } = await inquirer.prompt([
@@ -187,16 +238,14 @@ Format your response as a JSON array of strings: ["Indicator1", "Indicator2", ..
           type: 'checkbox',
           name: 'selectedIndicators',
           message: 'Select indicators for your strategy:',
-          choices: availableIndicators,
-          default: options.indicators || availableIndicators.slice(0, 3),
+          choices: finalIndicators,
+          default: options.indicators || finalIndicators.slice(0, 3),
           validate: (input) => input.length > 0 ? true : 'At least one indicator is required',
           pageSize: 15
         }
       ]);
       
       // Handle custom indicators
-      let finalIndicators = [...selectedIndicators];
-      
       if (selectedIndicators.includes('Custom (specify your own)')) {
         const { customIndicators } = await inquirer.prompt([
           {
@@ -227,48 +276,53 @@ Format your response as a JSON array of strings: ["Indicator1", "Indicator2", ..
       spinner.start('Generating parameters based on your selections...');
       
       const paramPrompt = `
-Create parameters for a trading strategy with the following characteristics:
-- Name: ${strategy.name}
-- Description: ${strategy.description}
+Create parameters for a ${strategy.name} trading strategy.
+
+The strategy has these characteristics:
 - Timeframes: ${strategy.timeframes.join(', ')}
 - Indicators: ${strategy.indicators.join(', ')}
+- Description: ${strategy.description}
 
-Generate appropriate parameters for this strategy that would allow customization of its behavior.
-For each parameter, include:
-- Name
-- Description
-- Default value
-- Type (number, boolean, string, etc.)
+Generate appropriate trading parameters for this strategy, formatted as a valid JSON object where each key is a parameter name and the value is an object with:
+- description: A concise description of what the parameter does
+- default: A reasonable default value (number, string, or boolean)
+- type: The parameter type ("number", "string", or "boolean")
 
-Format your response as a JSON object:
+Example format:
 {
-  "paramName1": {
-    "description": "Description of parameter 1",
-    "default": defaultValue,
+  "parameterName": {
+    "description": "What this parameter does",
+    "default": 50,
     "type": "number"
   },
-  "paramName2": {
-    "description": "Description of parameter 2",
-    "default": defaultValue,
+  "anotherParameter": {
+    "description": "Purpose of this parameter",
+    "default": true,
     "type": "boolean"
   }
 }
 
-Include at least parameters for:
-- Entry and exit conditions
-- Risk management settings
-- Indicator configuration
+Include 4-6 parameters that would be most useful for this specific strategy, such as thresholds, periods, or multipliers.
 `;
       
       try {
-        const response = await llmProvider.prompt(paramPrompt);
+        // Add a timeout to prevent hanging
+        const paramTimeoutMs = 30000; // 30 seconds
+        const paramTimeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Parameter generation timed out')), paramTimeoutMs)
+        );
         
-        // Extract JSON from response
-        const jsonStart = response.content.indexOf('{');
-        const jsonEnd = response.content.lastIndexOf('}') + 1;
+        const paramResponsePromise = llmProvider.prompt(paramPrompt, {
+          temperature: 0.3,
+          maxTokens: 1200
+        });
         
-        if (jsonStart >= 0 && jsonEnd > jsonStart) {
-          const jsonString = response.content.substring(jsonStart, jsonEnd);
+        // Race the response against the timeout
+        const response = await Promise.race([paramResponsePromise, paramTimeoutPromise]) as any;
+        
+        // Parse the JSON response
+        const jsonString = extractJsonFromText(response.content);
+        if (jsonString) {
           strategy.parameters = JSON.parse(jsonString);
         } else {
           throw new Error('Failed to parse parameters from LLM response');
@@ -375,43 +429,125 @@ Include at least parameters for:
         indicators: options.indicators || ['RSI', 'Moving Average'],
         parameters: {}
       };
+      
+      // Generate parameters for non-interactive mode
+      spinner.start('Generating strategy parameters...');
+      
+      try {
+        const paramPrompt = `
+Create parameters for a ${strategy.name} trading strategy.
+
+The strategy has these characteristics:
+- Timeframes: ${strategy.timeframes.join(', ')}
+- Indicators: ${strategy.indicators.join(', ')}
+- Description: ${strategy.description}
+
+Generate appropriate trading parameters for this strategy, formatted as a valid JSON object where each key is a parameter name and the value is an object with:
+- description: A concise description of what the parameter does
+- default: A reasonable default value (number, string, or boolean)
+- type: The parameter type ("number", "string", or "boolean")
+
+Include 4-6 parameters that would be most useful for this specific strategy, such as thresholds, periods, or multipliers.
+`;
+
+        // Add a timeout to prevent hanging
+        const paramTimeoutMs = 30000; // 30 seconds
+        const paramTimeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Parameter generation timed out')), paramTimeoutMs)
+        );
+
+        const paramResponsePromise = llmProvider.prompt(paramPrompt, {
+          temperature: 0.2,
+          max_tokens: 1000
+        });
+
+        // Race the response against the timeout
+        const response = await Promise.race([paramResponsePromise, paramTimeoutPromise]) as any;
+
+        // Parse the JSON response
+        const jsonString = extractJsonFromText(response.content);
+        if (jsonString) {
+          strategy.parameters = JSON.parse(jsonString);
+          spinner.succeed('Strategy parameters generated');
+        } else {
+          throw new Error('Failed to parse parameters from LLM response');
+        }
+      } catch (error) {
+        console.warn(`Failed to generate parameters: ${error instanceof Error ? error.message : String(error)}`);
+        spinner.warn('Using default parameters');
+        
+        // Use default parameters if failed to generate
+        strategy.parameters = {
+          entryThreshold: {
+            description: 'Threshold for entry signals',
+            default: 70,
+            type: 'number'
+          },
+          exitThreshold: {
+            description: 'Threshold for exit signals',
+            default: 30,
+            type: 'number'
+          },
+          stopLossPercentage: {
+            description: 'Stop loss as percentage of entry price',
+            default: 5,
+            type: 'number'
+          },
+          takeProfitPercentage: {
+            description: 'Take profit as percentage of entry price',
+            default: 10,
+            type: 'number'
+          }
+        };
+      }
     }
+    
+    // After the strategy has been defined but before generating code
+    await enhanceCharacterForTrading(
+      // Extract the base project path from outputDir by removing '/strategies'
+      options.outputDir ? path.dirname(options.outputDir) : process.cwd(),
+      strategy, 
+      llmProvider
+    );
     
     // Generate strategy implementation
     console.log(chalk.cyan('\nGenerating Strategy Implementation'));
     
     spinner.start('Generating strategy code...');
     
-    const pluginImports = pluginDocs.map(plugin => plugin.name).join(', ');
-    
     const codePrompt = `
-Create a TypeScript implementation for a crypto trading strategy with the following specifications:
+Create a TypeScript implementation for a cryptocurrency trading strategy with these specifications:
 - Name: ${strategy.name}
-- Description: ${strategy.description}
 - Timeframes: ${strategy.timeframes.join(', ')}
 - Indicators: ${strategy.indicators.join(', ')}
 - Parameters: ${JSON.stringify(strategy.parameters, null, 2)}
-${pluginDocs.length > 0 ? `- Available Plugins: ${pluginImports}` : ''}
 
-Generate a complete TypeScript file that implements this strategy. 
-The strategy should:
-1. Import necessary dependencies
-2. Define a class that implements the strategy logic
-3. Include methods for initialization, processing data, and generating signals
-4. Properly use the specified indicators
-5. Handle different timeframes
-6. Use the defined parameters with their default values
-7. Include appropriate comments
+The strategy should focus on these plugins:
+${pluginDocs.map(p => `- ${p.name}`).join('\n')}
 
-For each indicator, implement the calculation logic or use appropriate libraries.
-Make the code clean, well-structured, and performant.
+Generate clean, well-structured TypeScript code that:
+1. Imports necessary dependencies
+2. Defines a strategy class with methods for initialization and signal generation
+3. Implements the specified indicators
+4. Uses the parameters with their default values
+5. Handles the specified timeframes
+6. Includes helpful comments
 
-Start the file with appropriate imports and end with exports.
+Focus on producing working code that can be easily understood and modified.
 `;
     
     let implementation = '';
     try {
-      const response = await llmProvider.generateCode(codePrompt, 'typescript');
+      // Add a timeout to prevent hanging
+      const codeTimeoutMs = 60000; // 60 seconds
+      const codeTimeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Code generation timed out')), codeTimeoutMs)
+      );
+      
+      const codeResponsePromise = llmProvider.generateCode(codePrompt, 'typescript');
+      
+      // Race the response against the timeout
+      const response = await Promise.race([codeResponsePromise, codeTimeoutPromise]) as any;
       implementation = response.content;
     } catch (error) {
       spinner.fail(`Failed to generate code: ${error instanceof Error ? error.message : String(error)}`);
