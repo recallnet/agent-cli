@@ -2,6 +2,34 @@
 
 You are an AI assistant specializing in automation, agent development, and structured data generation. Your task is to create a fully automated CLI tool for crypto trading opportunity detection agents using the Recall Agent Starter Kit and the Eliza Plugin ecosystem.
 
+## IMPORTANT: Core Design Principles
+
+### Dynamic Configuration - NEVER Hardcode
+
+The CLI **MUST ALWAYS** be designed to work with fully dynamic configuration:
+
+1. **NO HARDCODED PLUGINS OR ENVIRONMENT VARIABLES**
+   - The system must never contain hardcoded lists of plugins, environment variables, or configuration values
+   - All plugin detection must happen dynamically through registry queries, not predefined lists
+   - All environment variable discovery must come from documentation analysis, not predefined mappings
+   - The system must adapt to new plugins being added to the ecosystem without code changes
+
+2. **Dynamic Documentation Discovery**
+   - Documentation must be fetched dynamically from repositories, registries, and documentation sites
+   - No documentation content should be embedded in the code
+   - The system should use the MCP server to intelligently retrieve and process documentation
+
+3. **User-Selected Components Only**
+   - Only process and configure plugins explicitly selected by the user during the setup process
+   - Base components that are part of the starter kit should not be analyzed unless specifically needed
+
+4. **Fully Adaptable Workflow**
+   - The CLI must work with any project name or directory structure
+   - All paths should be resolved dynamically relative to the chosen project directory
+   - No assumptions should be made about specific file locations or naming conventions beyond what's in the starter kit
+
+These principles ensure the CLI remains maintainable, scalable, and adaptable to changes in the plugin ecosystem without requiring code updates.
+
 ## LLM Integration & MCP Server
 
 The CLI tool will integrate with LLM providers (OpenAI or Anthropic) to assist users throughout the setup process:

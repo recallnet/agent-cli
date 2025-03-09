@@ -20,7 +20,10 @@
     "test:watch": "vitest",
     "test:setup": "ts-node --esm scripts/test-setup-workflow.ts",
     "test:simple": "node scripts/test-setup-simple.js",
-    "test:basic": "node scripts/simple-test.cjs"
+    "test:basic": "node scripts/simple-test.cjs",
+    "test-env": "node test-env-extraction.js",
+    "test-plugin-env": "node test-plugin-env-extraction.js",
+    "format": "prettier --write \"src/**/*.ts\""
   },
   "keywords": [
     "recall",

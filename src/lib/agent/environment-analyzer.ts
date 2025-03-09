@@ -59,35 +59,8 @@ export const COMMON_ENV_VARIABLES: EnvVariable[] = [
  * Plugin-specific environment variables
  */
 export const PLUGIN_ENV_REQUIREMENTS: Record<string, EnvVariable[]> = {
-  '@elizaos-plugins/ccxt': [
-    {
-      name: 'EXCHANGE_API_KEY',
-      description: 'API key for cryptocurrency exchange',
-      required: true,
-      secret: true
-    },
-    {
-      name: 'EXCHANGE_SECRET',
-      description: 'Secret for cryptocurrency exchange API',
-      required: true,
-      secret: true
-    }
-  ],
-  '@elizaos-plugins/binance': [
-    {
-      name: 'BINANCE_API_KEY',
-      description: 'API key for Binance',
-      required: true,
-      secret: true
-    },
-    {
-      name: 'BINANCE_API_SECRET',
-      description: 'Secret for Binance API',
-      required: true,
-      secret: true
-    }
-  ],
-  // Add more plugin environment variables as needed
+  // No hardcoded plugin environment variables
+  // All plugin environment variables should be detected dynamically
 };
 
 /**

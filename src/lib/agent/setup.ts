@@ -10,7 +10,6 @@ import { buildStrategyInteractively } from '../strategy/interactive-builder.js';
 import { CharacterConfig, generateCharacterForSetup } from './character.js';
 import { DocResponse } from '../mcp/server.js';
 import { checkSystemPrerequisites, validateProjectStructure } from './prerequisites.js';
-import { analyzeEnvironment } from './environment-analyzer.js';
 import { getInstalledPlugins, checkPluginCompatibility, installPlugin, PluginInfo, updateProjectStructure } from './plugin-compatibility.js';
 
 /**
@@ -117,6 +116,12 @@ export class AgentSetup {
           status: 'pending'
         },
         {
+          id: 'environment-configuration',
+          name: 'Environment Configuration',
+          description: 'Setting up environment variables',
+          status: 'pending'
+        },
+        {
           id: 'strategy-creation',
           name: 'Strategy Creation',
           description: 'Building your trading strategy',
@@ -126,12 +131,6 @@ export class AgentSetup {
           id: 'character-creation',
           name: 'Character Creation',
           description: 'Creating your agent character',
-          status: 'pending'
-        },
-        {
-          id: 'environment-configuration',
-          name: 'Environment Configuration',
-          description: 'Setting up environment variables',
           status: 'pending'
         },
         {
@@ -173,14 +172,14 @@ export class AgentSetup {
       // Step 5: Plugin Installation
       await this.installPlugins();
       
-      // Step 6: Strategy Creation
+      // Step 6: Environment Configuration
+      await this.configureEnvironment();
+      
+      // Step 7: Strategy Creation
       await this.createStrategy();
       
-      // Step 7: Character Creation
+      // Step 8: Character Creation
       await this.createCharacter();
-      
-      // Step 8: Environment Configuration
-      await this.configureEnvironment();
       
       // Step 9: Agent Finalization
       await this.finalizeAgent();
@@ -924,7 +923,70 @@ Keep it clear and detailed but concise (less than 300 words).`;
   }
   
   /**
-   * Step 6: Create trading strategy
+   * Step 6: Configure environment
+   */
+  private async configureEnvironment(): Promise<void> {
+    this.startStep('environment-configuration');
+    
+    try {
+      console.log(chalk.cyan('\n🌐 Configuring Environment\n'));
+      
+      // Import our environment setup module
+      const { setupEnvironmentVariables } = await import('../cli/env.js');
+      
+      // Only pass the plugins that were specifically selected by the user during setup
+      // This ensures we're not trying to configure everything in node_modules
+      const selectedPlugins = this.session.selectedPlugins || [];
+      
+      console.log(chalk.yellow('Starting interactive environment configuration...\n'));
+      console.log(chalk.gray(`Configuring environment for ${selectedPlugins.length} selected plugins\n`));
+      
+      // Ensure we're ONLY processing the user-selected plugins and not all installed plugins
+      // Filter out any non-user selected plugins to avoid processing plugins that came with the starter kit
+      const userPluginsOnly = [...selectedPlugins]; // Create a new array to avoid mutation
+      
+      console.log(chalk.gray(`Processing only these plugins: ${userPluginsOnly.join(', ')}\n`));
+      
+      await setupEnvironmentVariables(
+        this.session.projectPath,
+        this.llmProvider,
+        this.mcpClient,
+        userPluginsOnly
+      );
+      
+      // Load environment variables from the created .env file
+      const envPath = path.join(this.session.projectPath, '.env');
+      if (fs.existsSync(envPath)) {
+        const envContent = fs.readFileSync(envPath, 'utf-8');
+        const envLines = envContent.split('\n');
+        
+        const envVars: Record<string, string> = {};
+        for (const line of envLines) {
+          const match = line.match(/^([^=]+)=(.*)$/);
+          if (match && match.length >= 3) {
+            const key = match[1].trim();
+            const value = match[2].trim();
+            if (key && value) {
+              envVars[key] = value;
+            }
+          }
+        }
+        
+        this.session.environment = envVars;
+        this.saveSession();
+      }
+      
+      console.log(chalk.green('\n✅ Environment configuration complete!\n'));
+      
+      this.completeStep('environment-configuration');
+    } catch (error) {
+      this.failStep('environment-configuration', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
+  
+  /**
+   * Step 7: Create trading strategy
    */
   private async createStrategy(): Promise<void> {
     this.startStep('strategy-creation');
@@ -961,7 +1023,7 @@ Keep it clear and detailed but concise (less than 300 words).`;
   }
   
   /**
-   * Step 7: Create character
+   * Step 8: Create character
    */
   private async createCharacter(): Promise<void> {
     this.startStep('character-creation');
@@ -984,36 +1046,6 @@ Keep it clear and detailed but concise (less than 300 words).`;
       this.completeStep('character-creation');
     } catch (error) {
       this.failStep('character-creation', error instanceof Error ? error.message : String(error));
-      throw error;
-    }
-  }
-  
-  /**
-   * Step 8: Configure environment
-   */
-  private async configureEnvironment(): Promise<void> {
-    this.startStep('environment-configuration');
-    
-    try {
-      console.log(chalk.cyan('\n🌐 Configuring Environment\n'));
-      
-      // Configure environment variables
-      const envAnalysis = analyzeEnvironment(this.session.projectPath, this.session.installedPlugins || []);
-      
-      // Extract environment variables from analysis
-      const envVars: Record<string, string> = {};
-      for (const variable of envAnalysis.availableVariables) {
-        if (variable.value) {
-          envVars[variable.name] = variable.value;
-        }
-      }
-      
-      this.session.environment = envVars;
-      this.saveSession();
-      
-      this.completeStep('environment-configuration');
-    } catch (error) {
-      this.failStep('environment-configuration', error instanceof Error ? error.message : String(error));
       throw error;
     }
   }

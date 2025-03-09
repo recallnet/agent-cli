@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
 import { EventEmitter } from 'events';
-import axios, { AxiosResponse } from 'axios';
+import axios from 'axios';
 import { URL } from 'url';
 import * as cheerio from 'cheerio';
 import { DocumentStore } from './document-store.js';
@@ -325,17 +325,8 @@ export class McpServer extends EventEmitter {
       
       console.log(`📚 MCP: Found ${pluginNames.length} plugins in registry`);
       
-      // Start with most common/important plugins first
-      const priorityPlugins = [
-        'ccxt', 'binance', 'coinbase', 'bittensor', 'exchange', 
-        'technical-indicators', 'backtest', 'sentiment', 'news'
-      ];
-      
-      // Prioritize the list - put priority plugins first, then alphabetical
-      const sortedPlugins = [
-        ...priorityPlugins.filter(p => pluginNames.includes(p) || pluginNames.includes(`plugin-${p}`)),
-        ...pluginNames.filter(p => !priorityPlugins.includes(p) && !priorityPlugins.includes(p.replace('plugin-', '')))
-      ];
+      // Process plugins in alphabetical order without any hardcoded priorities
+      const sortedPlugins = [...pluginNames].sort();
       
       // Use the main population method
       return await this.populatePluginDocumentation(sortedPlugins, force);
@@ -2319,55 +2310,22 @@ const item: ${exp.name} = {
    * This ensures we have at least the basic plugins covered
    */
   private addKnownPluginUrls(urlMapping: Map<string, string>, baseUrl: string): void {
-    const packages = [
-      // Adapters
-      { name: 'adapter-sqlite', url: `${baseUrl}/packages/adapters/sqlite/` },
-      { name: 'adapter-postgres', url: `${baseUrl}/packages/adapters/postgres/` },
-      
-      // Clients
-      { name: 'client-auto', url: `${baseUrl}/packages/clients/auto/` },
-      { name: 'client-direct', url: `${baseUrl}/packages/clients/direct/` },
-      { name: 'client-discord', url: `${baseUrl}/packages/clients/discord/` },
-      { name: 'client-telegram', url: `${baseUrl}/packages/clients/telegram/` },
-      { name: 'client-twitter', url: `${baseUrl}/packages/clients/twitter/` },
-      
-      // Core plugins
-      { name: 'core', url: `${baseUrl}/packages/core/` },
-      { name: 'plugin-bootstrap', url: `${baseUrl}/packages/plugin-bootstrap/` },
-      { name: 'plugin-image-generation', url: `${baseUrl}/packages/plugin-image-generation/` },
-      { name: 'plugin-solana', url: `${baseUrl}/packages/plugin-solana/` },
-      { name: 'plugin-starknet', url: `${baseUrl}/packages/plugin-starknet/` },
-      { name: 'plugin-tee-log', url: `${baseUrl}/packages/plugin-tee-log/` },
-      { name: 'plugin-coingecko', url: `${baseUrl}/packages/plugin-coingecko/` },
-      { name: 'plugin-rabbi-trader', url: `${baseUrl}/packages/plugin-rabbi-trader/` }
-    ];
+    // Instead of a hardcoded list, we'll log what we're doing and rely on dynamic discovery
+    console.log('🔍 DOCS SITE: Using dynamic plugin discovery instead of hardcoded references');
     
-    // Add each package with different naming formats
-    for (const pkg of packages) {
-      const { name, url } = pkg;
-      
-      // Base format
-      urlMapping.set(name, url);
-      
-      // With @elizaos prefix
-      urlMapping.set(`@elizaos/${name}`, url);
-      
-      // Handle specific package types
-      if (name.startsWith('adapter-')) {
-        const baseName = name.replace(/^adapter-/, '');
-        urlMapping.set(baseName, url);
-        urlMapping.set(`@elizaos/plugin-${name}`, url);
-      } else if (name.startsWith('client-')) {
-        const baseName = name.replace(/^client-/, '');
-        urlMapping.set(baseName, url);
-        urlMapping.set(`@elizaos/plugin-${name}`, url);
-      } else if (name.startsWith('plugin-')) {
-        const baseName = name.replace(/^plugin-/, '');
-        urlMapping.set(baseName, url);
-      }
-    }
+    // We'll leave the logic for mapping formats, but won't hardcode specific plugins
+    // The system will discover plugins dynamically from the ElizaOS registry 
+    // or by scanning the repository structure
     
-    console.log(`🔍 DOCS SITE: Added ${packages.length} known plugin URLs to mapping`);
+    // Notice to developers in the code
+    // NOTE: This method intentionally avoids hardcoding specific plugin names.
+    // Plugin documentation should be discovered dynamically from:
+    // 1. The ElizaOS plugin registry
+    // 2. Repository scanning
+    // 3. Documentation site scraping
+    
+    // Log the base URL we're using for discovery
+    console.log(`🔍 DOCS SITE: Using base documentation URL: ${baseUrl}`);
   }
   
   private async processSubdirectory(dirUrl: string, dirType: string, urlMapping: Map<string, string>): Promise<void> {
@@ -2454,7 +2412,31 @@ const item: ${exp.name} = {
   }
   
   /**
-   * Get the documentation URL for a plugin by name
+   * Gets all plugin documentation URLs, optionally forcing a refresh of the cache
+   * @param forceRefresh Whether to force a refresh of the cache
+   * @returns A Map of plugin names to documentation URLs
+   */
+  private async getPluginDocumentationUrls(forceRefresh: boolean = false): Promise<Map<string, string>> {
+    if (forceRefresh) {
+      this.clearPluginDocUrlsCache();
+    }
+    
+    // Refresh cache if needed
+    if (
+      !this.pluginDocUrlsCache ||
+      Date.now() - this.pluginDocUrlsCacheTime > this.PLUGIN_DOC_URLS_CACHE_TTL
+    ) {
+      this.pluginDocUrlsCache = await this.scrapePluginDocUrls();
+      this.pluginDocUrlsCacheTime = Date.now();
+    }
+    
+    return this.pluginDocUrlsCache || new Map<string, string>();
+  }
+  
+  /**
+   * Gets the documentation URL for a specific plugin
+   * @param pluginName The name of the plugin
+   * @returns The documentation URL for the plugin, or null if not found
    */
   private async getPluginDocUrl(pluginName: string): Promise<string | null> {
     // Force a fresh scrape for testing
@@ -2689,196 +2671,136 @@ const item: ${exp.name} = {
   }
   
   /**
-   * Fetch documentation from the elizaos.github.io website
+   * Fetch documentation for a plugin from the docs website
    */
-  private async fetchDocsWebsiteDocumentation(pluginName: string): Promise<DocResponse> {
-    console.log(`🌐 DOCS SITE: Fetching documentation for ${pluginName}`);
-    
+  private async fetchDocsWebsiteDocumentation(pluginName: string): Promise<DocResponse | null> {
     try {
-      // Get the documentation URL for this plugin
-      const docUrl = await this.getPluginDocUrl(pluginName);
+      // Normalize the plugin name for consistent handling
+      const normalizedName = pluginName.replace(/^@elizaos\//, '').replace(/^plugin-/, '');
       
-      if (!docUrl) {
-        console.error(`❌ DOCS SITE: No documentation URL found for ${pluginName}`);
-        throw new Error(`No documentation URL found for ${pluginName}`);
-      }
+      // Dynamic URL discovery for all plugins - no special cases
+      console.log(`🔍 DOCS SITE: Fetching documentation for ${pluginName}`);
       
-      console.log(`🌐 DOCS SITE: Attempting to fetch from ${docUrl}`);
+      // Get all plugin documentation URLs - with refresh forced for better accuracy
+      const pluginUrls = await this.getPluginDocumentationUrls(true);
       
-      // Various URL formats to try
-      const urlsToTry = [
-        docUrl,                            // Base URL
-        `${docUrl}/`,                      // With trailing slash
-        `${docUrl}/index.html`,            // With index.html
-        `${docUrl}/README.md`,             // With README.md
-        `${docUrl}/docs/README.md`         // In docs folder
+      // Handle different plugin naming formats
+      const possibleNames = [
+        pluginName.toLowerCase(),
+        normalizedName.toLowerCase(),
+        `plugin-${normalizedName.toLowerCase()}`,
+        normalizedName.toLowerCase().replace(/-/g, ''),
       ];
       
-      // Try each URL until we get a successful response
-      let response = null;
-      let successfulUrl = null;
-      
-      for (const url of urlsToTry) {
-        try {
-          console.log(`🌐 DOCS SITE: Trying URL: ${url}`);
-          response = await axios.get(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; RecallCLI/1.0)'
-            },
-            timeout: 10000 // 10 second timeout
-          });
-          
-          if (response.status === 200) {
-            successfulUrl = url;
-            console.log(`✅ DOCS SITE: Successfully fetched from ${url}`);
-            break;
-          }
-        } catch (urlError) {
-          console.log(`❌ DOCS SITE: Failed to fetch from ${url}: ${urlError instanceof Error ? urlError.message : String(urlError)}`);
-          // Continue to next URL
+      // Try to find a URL for this plugin
+      let pluginUrl = null;
+      for (const name of possibleNames) {
+        if (pluginUrls.has(name)) {
+          pluginUrl = pluginUrls.get(name);
+          break;
         }
       }
       
-      if (!response || !successfulUrl) {
-        console.error(`❌ DOCS SITE: All URLs failed for ${pluginName}`);
-        throw new Error(`Failed to fetch documentation for ${pluginName} from any URL`);
+      if (!pluginUrl) {
+        console.error(`❌ DOCS SITE: No documentation URL found for ${pluginName}`);
+        return null;
       }
       
-      // Process the response based on content type
-      const contentType = response.headers['content-type'] || '';
+      console.log(`🌐 DOCS SITE: Found documentation URL for ${pluginName}: ${pluginUrl}`);
       
-      if (contentType.includes('text/html')) {
-        return this.processHtmlDocResponse(response, pluginName, successfulUrl);
-      } else if (contentType.includes('text/markdown') || contentType.includes('text/plain') || successfulUrl.endsWith('.md')) {
-        // Process markdown content
-        return {
-          content: response.data,
-          source: successfulUrl,
-          timestamp: Date.now()
-        };
-      } else {
-        console.error(`❌ DOCS SITE: Unexpected content type: ${contentType}`);
-        throw new Error(`Unexpected content type: ${contentType}`);
+      // Fetch and process the documentation page
+      try {
+        const content = await this.fetchDocumentationFromUrl(pluginUrl);
+        if (content) {
+          return {
+            content,
+            source: `docs-website:${pluginUrl}`,
+            timestamp: Date.now()
+          };
+        }
+      } catch (error) {
+        console.error(`❌ DOCS SITE: Error fetching from ${pluginUrl}: ${error instanceof Error ? error.message : String(error)}`);
       }
+      
+      throw new Error(`No documentation URL found for ${pluginName}`);
     } catch (error) {
       console.error(`❌ DOCS SITE: Error fetching from docs website: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+  
+  /**
+   * Fetch documentation content from a URL
+   */
+  private async fetchDocumentationFromUrl(url: string): Promise<string> {
+    console.log(`🔍 DOCS SITE: Fetching from ${url}`);
+    
+    try {
+      const response = await axios.get(url);
+      const html = response.data;
+      
+      // Process the HTML content consistently for all plugins
+      const content = this.processHtmlContent(html);
+      return content;
+      
+    } catch (error) {
+      console.error(`❌ DOCS SITE: Error fetching from ${url}: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
   
   /**
-   * Process HTML documentation response
+   * Process HTML content to extract useful documentation
    */
-  private async processHtmlDocResponse(response: AxiosResponse, pluginName: string, url: string): Promise<DocResponse> {
-    // If we get HTML back, we need to extract the relevant content
-    if (response.headers['content-type']?.includes('text/html')) {
-      console.log('🌐 DOCS SITE: Processing HTML content...');
-      const $ = cheerio.load(response.data);
+  private processHtmlContent(html: string): string {
+    try {
+      // Load HTML content
+      const $ = cheerio.load(html);
       
-      // Try to find the README content
-      let content = '';
+      // Look for main content
+      const mainContent = $('main, article, .markdown, .documentation, #readme, .docs-content').first();
       
-      // First, try to extract content from the main documentation area
-      // Since this is a documentation site, look for specific content areas
-      // Based on the screenshot, we should look for content within the main area
-      const mainContent = $('main').html();
-      if (mainContent) {
-        console.log('🌐 DOCS SITE: Found content in <main> tag');
-        content = mainContent;
-      } else {
-        // Try alternative selectors for content
-        const articleContent = $('article').html();
-        if (articleContent) {
-          console.log('🌐 DOCS SITE: Found content in <article> tag');
-          content = articleContent;
-        } else {
-          // Try to find a content div
-          const contentDiv = $('.content, #content, .documentation, #documentation').html();
-          if (contentDiv) {
-            console.log('🌐 DOCS SITE: Found content in content div');
-            content = contentDiv;
-          } else {
-            // Just grab the body as a last resort
-            console.log('🌐 DOCS SITE: Falling back to body content');
-            content = $('body').html() || response.data;
-          }
-        }
+      if (mainContent.length > 0) {
+        // Get the HTML content
+        let content = mainContent.html() || '';
+        
+        // Convert HTML to markdown-like text
+        content = content
+          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
+          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
+          .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n')
+          .replace(/<h5[^>]*>(.*?)<\/h5>/gi, '##### $1\n\n')
+          .replace(/<h6[^>]*>(.*?)<\/h6>/gi, '###### $1\n\n')
+          .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1\n')
+          .replace(/<a[^>]*href=["'](.*?)["'][^>]*>(.*?)<\/a>/gi, '[$2]($1)')
+          .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
+          .replace(/<pre[^>]*>(.*?)<\/pre>/gi, '```\n$1\n```')
+          .replace(/<table[^>]*>(.*?)<\/table>/gi, (match, table) => {
+            return '\n' + table
+              .replace(/<tr[^>]*>(.*?)<\/tr>/gi, '$1\n')
+              .replace(/<th[^>]*>(.*?)<\/th>/gi, '| $1 ')
+              .replace(/<td[^>]*>(.*?)<\/td>/gi, '| $1 ')
+              .replace(/\|\s*$/, '|') + '\n';
+          })
+          .replace(/<[^>]+>/g, '') // Remove remaining HTML tags
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/\n{3,}/g, '\n\n'); // Remove excessive newlines
+        
+        return content;
       }
       
-      // If content is still empty, try a different approach
-      if (!content) {
-        console.log('🌐 DOCS SITE: No content found with primary selectors, trying alternative extraction');
-        // Look for specific elements that might contain documentation
-        const features = $('.features');
-        if (features.length) {
-          console.log('🌐 DOCS SITE: Found features section');
-          content = features.html() || '';
-        }
-      }
-      
-      // Look for the README button and follow it if possible
-      const readmeLink = $('a.readme-button, a:contains("README"), a[href*="README"], a[href*="readme"]').attr('href');
-      if (readmeLink) {
-        console.log(`🌐 DOCS SITE: Found README button with link: ${readmeLink}`);
-        try {
-          // Try to get the README content directly
-          const readmeUrl = new URL(readmeLink, url).toString();
-          console.log(`🌐 DOCS SITE: Following README link to: ${readmeUrl}`);
-          
-          const readmeResponse = await axios.get(readmeUrl);
-          content = readmeResponse.data;
-          console.log(`🌐 DOCS SITE: Successfully fetched README content (${content.length} bytes)`);
-        } catch (readmeErr) {
-          console.warn(`🌐 DOCS SITE: Failed to fetch README: ${readmeErr instanceof Error ? readmeErr.message : String(readmeErr)}`);
-          // Fall back to the main page content
-          content = $('main').html() || $('body').html() || response.data;
-          console.log(`🌐 DOCS SITE: Using main page content as fallback (${content.length} bytes)`);
-        }
-      } else {
-        // Just use the main content if no README link is found
-        console.log('🌐 DOCS SITE: No README button found, using main content');
-        content = $('main').html() || $('body').html() || response.data;
-        console.log(`🌐 DOCS SITE: Extracted content length: ${content ? content.length : 0} bytes`);
-      }
-      
-      // Normalize the plugin name
-      const normalizedName = pluginName.startsWith('@') 
-        ? pluginName.split('/')[1] 
-        : pluginName;
-      
-      // Extract plugin metadata if available
-      const name = $('h1').first().text() || normalizedName;
-      
-      console.log(`🌐 DOCS SITE: Successfully extracted documentation for ${name}`);
-      return {
-        content: this.cleanText(content),
-        source: `docs:${pluginName}`,
-        timestamp: Date.now(),
-        metadata: {
-          name: normalizedName,
-          description: `Plugin documentation for ${normalizedName}`,
-          url: url,
-          category: 'plugins'
-        }
-      };
-    } else {
-      // Just return the raw content if it's not HTML
-      console.log('🌐 DOCS SITE: Received non-HTML content, using as-is');
-      
-      // Normalize the plugin name
-      const normalizedName = pluginName.startsWith('@') 
-        ? pluginName.split('/')[1] 
-        : pluginName;
-      
-      return {
-        content: response.data,
-        source: `docs:${pluginName}`,
-        timestamp: Date.now(),
-        metadata: {
-          name: normalizedName,
-          url: url
-        }
-      };
+      // Fallback to extracting text from the entire body
+      const bodyText = $('body').text();
+      return bodyText.trim();
+    } catch (error) {
+      console.error('Error processing HTML content:', error);
+      return html; // Return the raw HTML as fallback
     }
   }
   

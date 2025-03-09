@@ -402,7 +402,7 @@ export class PluginRegistry {
     // Build the installation command
     const versionFlag = version ? `@${version}` : '';
     
-    // Handle both formats: "ccxt" and "plugin-ccxt"
+    // Handle both formats with or without the "plugin-" prefix
     // If the name already starts with "plugin-", don't add it again
     const baseName = name.startsWith('plugin-') ? name : `plugin-${name}`;
     
@@ -483,47 +483,14 @@ export class PluginRegistry {
    */
   private async buildPluginListFromDocs(): Promise<Record<string, PluginInfo>> {
     try {
-      console.log('Building plugin list from Eliza docs site...');
+      console.log('Building plugin list from dynamic sources...');
       
-      // Define common plugin types we know about based on the screenshot
-      const knownPlugins = [
-        { name: '@elizaos/plugin-coinmarketcap', description: 'CoinMarketCap plugin for cryptocurrency price data' },
-        { name: '@elizaos/plugin-browser', description: 'Browser plugin for web access' },
-        { name: '@elizaos/plugin-node', description: 'Node.js plugin for system access' },
-        { name: '@elizaos/plugin-b2', description: 'Binance Plugin for Eliza' },
-        { name: '@elizaos/plugin-bittensor', description: 'Bittensor plugin for Eliza' },
-        { name: '@elizaos/plugin-ccxt', description: 'CCXT Plugin for Eliza' },
-        { name: '@elizaos/plugin-coinbase', description: 'Coinbase Plugin for Eliza' },
-      ];
-      
-      // Create basic plugin info for each known plugin
+      // No hardcoded plugin list - we'll return an empty object
+      // and let the system discover plugins dynamically
       this.plugins = {};
-      
-      for (const plugin of knownPlugins) {
-        const baseName = plugin.name.startsWith('@') 
-          ? plugin.name.split('/')[1]
-          : plugin.name;
-          
-        this.plugins[plugin.name] = {
-          name: baseName,
-          description: plugin.description,
-          version: '1.0.0', // Default version
-          author: 'Eliza',
-          license: 'MIT',
-          repository: `https://github.com/elizaos/${baseName}`,
-          dependencies: {},
-          requiredEnv: [],
-          documentation: `https://elizaos.github.io/eliza/packages/${plugin.name}/`,
-          importStatement: `import { ${this.capitalizeFirstLetter(baseName.replace(/^plugin-/, '').replace(/-./g, x => x[1].toUpperCase()))} } from '${plugin.name}';`
-        };
-      }
-      
-      // Save to plugins.json
-      fs.writeFileSync(this.pluginsJsonPath, JSON.stringify(this.plugins, null, 2));
-      
       return this.plugins;
     } catch (error) {
-      console.error(`Failed to build plugin list from docs: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Error building plugin list:', error);
       throw error;
     }
   }
