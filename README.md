@@ -49,8 +49,10 @@ pnpm link --global
 
 Create a new trading agent:
 
+Ensure that you `cd` back to your machine's root directory or outside of this CLI directory before testing creating a project.
+
 ```bash
-recall-cli agent create
+recall-cli start project-name
 ```
 
 This interactive command will guide you through:

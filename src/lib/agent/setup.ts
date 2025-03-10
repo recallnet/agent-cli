@@ -1276,6 +1276,10 @@ Generated with Recall CLI
       
       // Process startup phase
       let agentStarted = false;
+      let agentInitialized = false;
+      let userInControl = false;
+      let autonomousMode = true;
+      
       const startupTimeout = setTimeout(() => {
         if (!agentStarted) {
           console.log(chalk.yellow('\nAgent startup is taking longer than expected. This might be normal for the first run.'));
@@ -1296,16 +1300,25 @@ Generated with Recall CLI
           agentResponseBuffer = agentResponseBuffer.slice(-5000);
         }
         
-        // Detect when agent is ready
+        // Detect when agent is ready and when it's initialized and waiting for commands
         if (!agentStarted && (output.includes('Agent ready') || output.includes('started successfully'))) {
           agentStarted = true;
           clearTimeout(startupTimeout);
+        }
+        
+        // Detect the specific "No unsynced logs to process" message which indicates the agent is ready for interaction
+        if (agentStarted && !agentInitialized && output.includes('No unsynced logs to process')) {
+          agentInitialized = true;
           
-          // Once agent is started, begin meta-agent operation
-          console.log(chalk.green('\n✅ Agent started successfully!\n'));
+          // Once agent is fully initialized, begin meta-agent operation
+          console.log(chalk.green('\n✅ Agent initialized and ready for interaction!\n'));
           console.log(chalk.cyan('🧠 I\'m now operating as the primary controller for your agent.'));
           console.log(chalk.cyan('I\'ll use my knowledge of your setup to work with the agent automatically.'));
-          console.log(chalk.cyan('You can observe our interaction, and type "exit" at any time to stop.\n'));
+          console.log(chalk.cyan('You can observe our interaction and:'));
+          console.log(chalk.cyan('• Type "exit" to stop the agent'));
+          console.log(chalk.cyan('• Type "pause" to pause autonomous mode and take control yourself'));
+          console.log(chalk.cyan('• Type "resume" to return control to the autonomous mode'));
+          console.log(chalk.cyan('• Type anything else to send it directly to the agent when in manual mode\n'));
           
           // Start the autonomous operation
           this.beginAutonomousOperation(agentProcess, agentResponseBuffer);
@@ -1333,18 +1346,53 @@ Generated with Recall CLI
         }
       });
       
-      // Set up minimal user control
+      // Set up user input handling
       const rl = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
+        prompt: ''
       });
       
       rl.on('line', (line) => {
-        if (line.trim().toLowerCase() === 'exit' || line.trim().toLowerCase() === 'quit') {
+        const input = line.trim();
+        
+        if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
           console.log(chalk.gray('\nExiting meta-agent operation. Shutting down agent process...'));
           agentProcess.kill();
           rl.close();
           process.exit(0);
+        } 
+        else if (input.toLowerCase() === 'pause') {
+          autonomousMode = false;
+          userInControl = true;
+          console.log(chalk.yellow('\n⏸️ Autonomous mode paused. You are now in control of the conversation.'));
+          console.log(chalk.yellow('Type your messages to talk directly to the agent, or type "resume" to let me take over again.\n'));
+          rl.prompt();
+        } 
+        else if (input.toLowerCase() === 'resume') {
+          if (!autonomousMode) {
+            autonomousMode = true;
+            userInControl = false;
+            console.log(chalk.green('\n▶️ Autonomous mode resumed. I\'ll continue the conversation with the agent.\n'));
+            
+            // Resume autonomous operation
+            this.performAgentOperation(agentProcess, agentResponseBuffer, {
+              operation: 'continue',
+              pluginsInfo: this.session.installedPlugins?.join(', ') || 'Standard plugins',
+              strategyName: this.session.strategy?.name || 'Custom Trading Strategy',
+              tradingGoals: this.session.tradingGoals || 'Crypto trading and analysis'
+            });
+          } else {
+            console.log(chalk.gray('Autonomous mode is already active.'));
+          }
+        } 
+        else if (userInControl && input.length > 0) {
+          // User is in control, send their input directly to the agent
+          console.log(chalk.blue('\n👤 You: ') + chalk.white(input));
+          
+          if (agentProcess.stdin && agentProcess.stdin.writable) {
+            agentProcess.stdin.write(input + '\n');
+          }
         }
       });
       
@@ -1369,15 +1417,40 @@ Generated with Recall CLI
     const strategyName = this.session.strategy?.name || 'Custom Trading Strategy'; 
     const tradingGoals = this.session.tradingGoals || 'Crypto trading and analysis';
     
-    // Initial operation
+    // Add additional context about selected assets and indicators if available
+    let enhancedContext = tradingGoals;
+    
+    if (this.session.tradingGoalsAnalysis) {
+      const analysis = this.session.tradingGoalsAnalysis;
+      
+      if (analysis.assets && analysis.assets.length > 0) {
+        enhancedContext += ` focusing on ${analysis.assets.join(', ')}`;
+      }
+      
+      if (analysis.indicators && analysis.indicators.length > 0) {
+        enhancedContext += ` using indicators like ${analysis.indicators.join(', ')}`;
+      }
+      
+      if (analysis.timeframes && analysis.timeframes.length > 0) {
+        enhancedContext += ` for ${analysis.timeframes.join(', ')} timeframes`;
+      }
+    }
+    
+    console.log(chalk.gray('\n🔎 Context for agent interaction:'));
+    console.log(chalk.gray(`• Strategy: ${strategyName}`));
+    console.log(chalk.gray(`• Trading focus: ${enhancedContext}`));
+    console.log(chalk.gray(`• Plugins: ${pluginsInfo}`));
+    console.log(chalk.gray('\nInitiating first interaction with agent...\n'));
+    
+    // Initial operation with short delay to ensure terminal is ready
     setTimeout(async () => {
       await this.performAgentOperation(agentProcess, responseBuffer, {
         operation: 'initialize',
         pluginsInfo,
         strategyName,
-        tradingGoals
+        tradingGoals: enhancedContext
       });
-    }, 2000);
+    }, 1500);
   }
   
   /**
@@ -1400,46 +1473,55 @@ Generated with Recall CLI
       const contextInfo = 'CONTEXT:\n' +
         `- The agent uses these plugins: ${context.pluginsInfo}\n` +
         `- The agent implements a strategy called: ${context.strategyName}\n` +
-        `- The trading goals are: ${context.tradingGoals}\n\n`;
+        `- The trading goals are: ${context.tradingGoals}\n` +
+        '- You are communicating with the agent through its terminal interface\n' +
+        '- The agent is an AI assistant that can help with crypto trading signals and analysis\n\n';
       
       const recentOutput = responseBuffer ? 
-        `RECENT AGENT OUTPUT:\n${responseBuffer.slice(-2000)}\n\n` : 
+        `RECENT AGENT OUTPUT:\n${responseBuffer.slice(-3000)}\n\n` : 
         '\n';
       
       const operationInfo = `CURRENT OPERATION: ${context.operation}\n\n`;
       
       const initializePrompt = 'As the first operation, introduce yourself to the agent and ask it about its ' +
-        'capabilities related to the strategy and plugins. Ask it to describe what data it can provide for your strategy.';
+        'capabilities related to cryptocurrency trading and analysis. Ask it to describe what data sources it has ' +
+        'access to and what trading signals it can provide for your strategy.';
       
-      const continuePrompt = 'Based on the recent agent output, decide what operation to perform next that would ' +
-        'showcase the agent\'s capabilities or extract useful information about markets or the strategy.';
+      const continuePrompt = 'Based on the recent agent output, continue the conversation by asking relevant ' +
+        'follow-up questions or giving specific instructions to demonstrate the agent\'s capabilities. ' +
+        'You could ask about specific cryptocurrencies, request technical analysis on a particular pair, ' +
+        'or ask it to explain trading indicators it can use. Keep your messages focused on crypto trading.';
       
       const operationDirective = context.operation === 'initialize' ? initializePrompt : continuePrompt;
       
       const finalInstructions = '\n\nRespond with ONLY the exact text to send to the agent. ' +
-        'Do not include explanations, markdown, or any other text that shouldn\'t be sent directly to the agent.';
+        'Do not include explanations, markdown, or any other text that shouldn\'t be sent directly to the agent. ' +
+        'Keep your messages natural, concise, and specific to crypto trading.';
       
       // Combine all parts to create the full prompt
       const promptText = basePrompt + contextInfo + recentOutput + operationInfo + operationDirective + finalInstructions;
       
       // Get the next command from the LLM
-      const response = await this.llmProvider.prompt(promptText, { maxTokens: 250 });
+      const response = await this.llmProvider.prompt(promptText, { maxTokens: 300 });
       const command = response.content.trim();
       
       // Display meta-agent action
-      console.log(chalk.cyan('\n🧠 Meta-Agent Action: ') + chalk.white(command));
+      console.log(chalk.cyan('\n🧠 Meta-Agent: ') + chalk.white(command));
       
       // Send command to the agent
       if (agentProcess.stdin && agentProcess.stdin.writable) {
         agentProcess.stdin.write(command + '\n');
         
         // Schedule next operation after a delay
+        // Use a longer delay for the first interaction to give agent time to respond
+        const nextDelay = context.operation === 'initialize' ? 15000 : 10000;
+        
         setTimeout(() => {
           this.performAgentOperation(agentProcess, responseBuffer, {
             ...context,
             operation: 'continue' // Future operations are continuations
           });
-        }, 20000); // 20 seconds between operations
+        }, nextDelay);
       }
     } catch (error) {
       console.error(chalk.red(`Error during meta-agent operation: ${error instanceof Error ? error.message : String(error)}`));
@@ -1447,7 +1529,7 @@ Generated with Recall CLI
       // Try again after a delay
       setTimeout(() => {
         this.performAgentOperation(agentProcess, responseBuffer, context);
-      }, 30000);
+      }, 15000);
     }
   }
   
