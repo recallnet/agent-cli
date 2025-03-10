@@ -29,18 +29,12 @@ cd recall-cli
 
 # Install dependencies
 npm install
-# or with pnpm
-pnpm install
 
 # Build the CLI
 npm run build
-# or with pnpm
-pnpm build
 
 # Link for global usage (optional)
 npm link
-# or with pnpm
-pnpm link --global
 ```
 
 ## Usage
