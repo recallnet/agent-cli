@@ -59,34 +59,6 @@ This interactive command will guide you through:
 - Configuring agent parameters
 - Setting up the environment
 
-### Running Agents
-
-Run a created agent:
-
-```bash
-recall-cli agent run
-```
-
-### Plugin Management
-
-List available plugins:
-
-```bash
-recall-cli plugin list
-```
-
-Install a specific plugin:
-
-```bash
-recall-cli plugin install ccxt
-```
-
-Show detailed plugin information:
-
-```bash
-recall-cli plugin info ccxt
-```
-
 ### Interactive Strategy Building
 
 Build a trading strategy through a guided conversation:
