@@ -28,6 +28,7 @@ export interface McpServerOptions {
     dbPath: string;  // Custom path for the SQLite database
   };
   embeddingService?: any; // Embedding service for vector search
+  allowedDirectories?: string[]; // Optional allowed directories for filesystem operations
 }
 
 /**
@@ -42,6 +43,7 @@ export enum DocSourceType {
   COMPETITION = 'competition',
   STRATEGY = 'strategy',
   CODE_ANALYSIS = 'code_analysis', // New type for analyzing code
+  FILESYSTEM = 'filesystem', // New type for filesystem operations
 }
 
 /**
@@ -51,6 +53,16 @@ export interface DocRequest {
   type: DocSourceType;
   query: string;
   params?: Record<string, string>;
+  filesystem?: {
+    operation: 'read_file' | 'write_file' | 'edit_file' | 'list_directory' | 'create_directory' | 'directory_tree' | 'move_file' | 'search_files' | 'get_file_info';
+    path?: string;
+    paths?: string[];
+    content?: string;
+    edits?: Array<{oldText: string, newText: string}>;
+    dryRun?: boolean;
+    excludePatterns?: string[];
+    pattern?: string;
+  };
 }
 
 /**
@@ -136,28 +148,26 @@ export class McpServer extends EventEmitter {
   private documentStore: DocumentStore;
   private textEmbeddings: TextEmbeddings;
   private documentChunker: DocumentChunker;
+  private allowedDirectories: string[] = [];
   
   constructor(options: Partial<McpServerOptions> = {}) {
     super();
     
-    // Set default options
     this.options = {
-      port: options.port || Number(process.env.MCP_PORT) || 3333,
-      cacheTtl: options.cacheTtl !== undefined ? options.cacheTtl : 3600000, // 1 hour default
-      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL,
-      docsBasePath: options.docsBasePath || process.env.MCP_DOCS_PATH,
+      port: options.port || Number(process.env.MCP_SERVER_PORT) || 3333,
+      cacheTtl: options.cacheTtl || Number(process.env.MCP_CACHE_TTL) || 3600000, // 1 hour
+      pluginRegistryUrl: options.pluginRegistryUrl || process.env.PLUGIN_REGISTRY_URL || 'https://elizaos.github.io/registry/index.json',
+      docsBasePath: options.docsBasePath || process.env.MCP_DOCS_BASE_PATH || 'https://elizaos.github.io/docs',
       githubApiToken: options.githubApiToken || process.env.GITHUB_API_TOKEN,
-      maxFileSizeBytes: options.maxFileSizeBytes || 1024 * 1024, // 1MB default
-      maxRepositoryFiles: options.maxRepositoryFiles || 100, // 100 files default
-      documentStore: options.documentStore
+      maxFileSizeBytes: options.maxFileSizeBytes || Number(process.env.MAX_FILE_SIZE_BYTES) || 1024 * 1024, // 1MB
+      maxRepositoryFiles: options.maxRepositoryFiles || Number(process.env.MAX_REPOSITORY_FILES) || 100,
     };
     
-    // Initialize plugin registry
+    // Initialize registry, document store, and other dependencies
     this.pluginRegistry = new PluginRegistry(this.options.pluginRegistryUrl);
     
     // Initialize document store
-    const dbPath = this.options.documentStore?.dbPath || getDataPath('mcp-docs.db');
-    this.documentStore = new DocumentStore(dbPath, options.embeddingService);
+    this.documentStore = new DocumentStore(this.options.documentStore?.dbPath || getDataPath('mcp-docs.db'), options.embeddingService);
     
     // Initialize text embeddings
     this.textEmbeddings = new TextEmbeddings();
@@ -166,7 +176,7 @@ export class McpServer extends EventEmitter {
     this.documentChunker = new DocumentChunker();
     
     console.log(chalk.blue(`📝 MCP server initialized with cache TTL: ${this.options.cacheTtl}ms`));
-    console.log(chalk.blue(`📝 MCP document store at: ${dbPath}`));
+    console.log(chalk.blue(`📝 MCP document store at: ${this.documentStore.getDbPath()}`));
   }
   
   /**

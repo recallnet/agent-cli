@@ -57,6 +57,13 @@ export class McpClient {
   }
   
   /**
+   * Get the base URL of the MCP server
+   */
+  getBaseUrl(): string {
+    return this.options.baseUrl;
+  }
+  
+  /**
    * Get documentation from the MCP server
    */
   async getDocumentation(request: DocRequest): Promise<DocResponse> {

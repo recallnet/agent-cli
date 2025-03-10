@@ -1,12 +1,11 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
-import fs from 'fs';
 import path from 'path';
 
 import { LlmProviderFactory } from '../llm/provider.js';
 import { McpClient } from '../mcp/client.js';
-import { PluginRegistry } from '../plugins/registry.js';
+import { PluginInfo, PluginRegistry } from '../plugins/registry.js';
 import { LlmProvider } from '../llm/provider.js';
 import { updateCharacterWithStrategy } from './character-updater.js';
 
@@ -49,7 +48,7 @@ export interface InteractiveBuilderResult {
     indicators: string[];
     parameters: Record<string, any>;
   };
-  implementation: string;
+  implementation?: string;
   filePath?: string;
 }
 
@@ -89,6 +88,32 @@ async function enhanceCharacterForTrading(
   }
 }
 
+// Modified to only process the selected plugins
+const getAllPluginInfo = async (targetPluginNames: string[]): Promise<PluginInfo[]> => {
+  const registry = new PluginRegistry();
+  
+  // If no plugins were specified, return an empty array
+  if (!targetPluginNames || targetPluginNames.length === 0) {
+    return [];
+  }
+  
+  console.log(`🔍 Processing ${targetPluginNames.length} selected plugins`);
+  
+  // Only process the plugins that were explicitly selected
+  const plugins = await Promise.all(
+    targetPluginNames.map(async (name) => {
+      try {
+        return await registry.getPlugin(name);
+      } catch (e) {
+        console.error(`Error loading plugin ${name}:`, e);
+        return null;
+      }
+    })
+  );
+
+  return plugins.filter(Boolean) as PluginInfo[];
+};
+
 /**
  * Build a trading strategy interactively with LLM assistance
  */
@@ -103,39 +128,19 @@ export async function buildStrategyInteractively(options: InteractiveBuilderOpti
     if (!llmProvider) {
       throw new Error('Failed to create LLM provider. Please configure your LLM provider first.');
     }
-    const pluginRegistry = new PluginRegistry();
     spinner.succeed('Strategy builder initialized');
     
     // First, let's modify the plugin documentation fetching to only get basic info
     spinner.start('Fetching basic plugin information...');
-    const pluginDocs = [];
-    
-    if (options.targetPlugins && options.targetPlugins.length > 0) {
-      for (const pluginName of options.targetPlugins) {
-        try {
-          const pluginInfo = await pluginRegistry.getPlugin(pluginName);
-          if (pluginInfo) {
-            // Only store the name and basic description - not the full documentation
-            pluginDocs.push({
-              name: pluginName,
-              description: pluginInfo.description,
-              version: pluginInfo.version
-            });
-          }
-        } catch (error) {
-          console.warn(`Failed to get information for plugin ${pluginName}`);
-        }
-      }
-    }
-    
-    spinner.succeed(`Identified ${pluginDocs.length} plugins for integration`);
+    const plugins = await getAllPluginInfo(options.targetPlugins || []);
+    console.log(`✔ Identified ${plugins.length} selected plugins for integration`);
     
     // Now let's modify the indicator extraction to be more lightweight
     let availableIndicators: string[] = [];
     
-    if (pluginDocs.length > 0) {
+    if (plugins.length > 0) {
       // Create a simple list of plugin names and descriptions
-      const pluginList = pluginDocs.map(plugin => 
+      const pluginList = plugins.map(plugin => 
         `${plugin.name}: ${plugin.description}`
       ).join('\n');
       
@@ -510,103 +515,22 @@ Include 4-6 parameters that would be most useful for this specific strategy, suc
       llmProvider
     );
     
-    // Generate strategy implementation
-    console.log(chalk.cyan('\nGenerating Strategy Implementation'));
+    // Skip code implementation generation
+    spinner.info('Skipping code implementation generation');
     
-    spinner.start('Generating strategy code...');
-    
-    const codePrompt = `
-Create a TypeScript implementation for a cryptocurrency trading strategy with these specifications:
-- Name: ${strategy.name}
-- Timeframes: ${strategy.timeframes.join(', ')}
-- Indicators: ${strategy.indicators.join(', ')}
-- Parameters: ${JSON.stringify(strategy.parameters, null, 2)}
-
-The strategy should focus on these plugins:
-${pluginDocs.map(p => `- ${p.name}`).join('\n')}
-
-Generate clean, well-structured TypeScript code that:
-1. Imports necessary dependencies
-2. Defines a strategy class with methods for initialization and signal generation
-3. Implements the specified indicators
-4. Uses the parameters with their default values
-5. Handles the specified timeframes
-6. Includes helpful comments
-
-Focus on producing working code that can be easily understood and modified.
-`;
-    
-    let implementation = '';
-    try {
-      // Add a timeout to prevent hanging
-      const codeTimeoutMs = 60000; // 60 seconds
-      const codeTimeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Code generation timed out')), codeTimeoutMs)
-      );
-      
-      const codeResponsePromise = llmProvider.generateCode(codePrompt, 'typescript');
-      
-      // Race the response against the timeout
-      const response = await Promise.race([codeResponsePromise, codeTimeoutPromise]) as any;
-      implementation = response.content;
-    } catch (error) {
-      spinner.fail(`Failed to generate code: ${error instanceof Error ? error.message : String(error)}`);
-      throw new Error('Strategy generation failed');
-    }
-    
-    spinner.succeed('Strategy implementation generated');
-    
-    // Save the strategy if output directory is provided
-    let filePath: string | undefined;
-    
-    if (options.outputDir) {
-      try {
-        // Create output directory if it doesn't exist
-        if (!fs.existsSync(options.outputDir)) {
-          fs.mkdirSync(options.outputDir, { recursive: true });
-        }
-        
-        // Create safe filename from strategy name
-        const safeFileName = strategy.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]/g, '-')
-          .replace(/-+/g, '-')
-          .replace(/^-|-$/g, '');
-        
-        // Save strategy implementation
-        filePath = path.join(options.outputDir, `${safeFileName}.ts`);
-        fs.writeFileSync(filePath, implementation);
-        
-        // Save strategy definition
-        const strategyJsonPath = path.join(options.outputDir, `${safeFileName}.json`);
-        fs.writeFileSync(strategyJsonPath, JSON.stringify(strategy, null, 2));
-        
-        // Save session information
-        const sessionData = {
-          timestamp: new Date().toISOString(),
-          strategy,
-          options,
-          pluginDocs: pluginDocs.map(p => p.name)
-        };
-        const sessionPath = path.join(options.outputDir, `${safeFileName}-session.json`);
-        fs.writeFileSync(sessionPath, JSON.stringify(sessionData, null, 2));
-        
-        console.log(chalk.green(`\nStrategy saved to: ${filePath}`));
-        console.log(chalk.green(`Strategy definition saved to: ${strategyJsonPath}`));
-        console.log(chalk.green(`Session information saved to: ${sessionPath}`));
-      } catch (error) {
-        console.error(`Failed to save strategy: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    
-    // Return the result
+    // Return the strategy without implementation
     return {
-      strategy,
-      implementation,
-      filePath
+      strategy: {
+        name: strategy.name,
+        description: strategy.description,
+        timeframes: strategy.timeframes,
+        indicators: strategy.indicators,
+        parameters: strategy.parameters
+      }
+      // No implementation field
     };
   } catch (error) {
-    console.error(`Strategy building failed: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
+    spinner.fail(`Strategy generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error('Strategy generation failed');
   }
 }

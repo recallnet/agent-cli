@@ -73,6 +73,8 @@ export async function initializeProject(name: string, options: { force?: boolean
         console.log(chalk.white(`1. cd ${name}`));
         console.log(chalk.white('2. pnpm install'));
         console.log(chalk.white('3. pnpm start'));
+        console.log();
+        console.log(chalk.cyan('Note:'), chalk.white('This project requires Node.js v22.11.0 and pnpm 9.15.4'));
       } catch (error) {
         console.error(chalk.red(`Setup failed: ${error instanceof Error ? error.message : String(error)}`));
         console.log(chalk.yellow('\nYou can still use the project manually.'));
@@ -81,10 +83,11 @@ export async function initializeProject(name: string, options: { force?: boolean
       // Display basic next steps
       console.log(chalk.cyan('\nNext steps:'));
       console.log(chalk.white(`1. cd ${name}`));
-      console.log(chalk.white('2. pnpm install'));
+      console.log(chalk.white(`2. pnpm install`));
       console.log(chalk.white('3. Edit configuration in config.js'));
       console.log(chalk.white('4. pnpm start'));
       console.log();
+      console.log(chalk.cyan('Note:'), chalk.white('This project requires Node.js v22.11.0 and pnpm 9.15.4'));
       console.log(chalk.cyan('Tip:'), chalk.white('Run with --interactive flag for a guided setup experience.'));
     }
   } catch (error) {

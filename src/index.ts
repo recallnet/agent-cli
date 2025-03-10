@@ -21,6 +21,12 @@ import { getDataPath } from './lib/utils/config-paths.js';
 // Import the EmbeddingService
 import { EmbeddingService } from './lib/mcp/embedding-service.js';
 
+// Import Node.js version enforcement
+import { enforceVersionRequirements } from './lib/agent/plugin-compatibility.js';
+
+// Enforce Node.js and pnpm versions before proceeding
+enforceVersionRequirements();
+
 // Initialize environment variables
 config();
 

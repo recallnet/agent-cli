@@ -227,73 +227,76 @@ export class PluginRegistry {
   }
   
   /**
-   * Get a plugin by name
+   * Get detailed information about a specific plugin
+   * @param name The name of the plugin
+   * @returns The plugin information, or null if not found
    */
   async getPlugin(name: string): Promise<PluginInfo | null> {
-    if (Object.keys(this.plugins).length === 0) {
-      console.log(`🔍 REGISTRY: No plugins loaded, fetching plugins first for ${name}`);
-      await this.fetchPlugins();
-      console.log(`🔍 REGISTRY: Loaded ${Object.keys(this.plugins).length} plugins`);
-    }
-    
-    // Debug: show first 10 plugin keys
-    const pluginKeys = Object.keys(this.plugins).slice(0, 10);
-    console.log(`🔍 REGISTRY: First 10 plugin keys: ${pluginKeys.join(', ')}`);
-    
-    // Try to find the plugin with the exact name first
+    // First check if we already have this plugin in our cache
     if (this.plugins[name]) {
-      console.log(`✅ REGISTRY: Found exact match for ${name}`);
+      console.log(`✅ REGISTRY: Found exact match for ${name} in cache`);
       return this.plugins[name];
     }
     
-    // If not found, try to normalize the name
-    const possibleFormats = this.getNormalizedPluginNames(name);
-    console.log(`🔍 REGISTRY: Looking for plugin ${name} in possible formats:`, possibleFormats);
-    
-    // Try each possible format
-    for (const format of possibleFormats) {
-      if (this.plugins[format]) {
-        console.log(`✅ REGISTRY: Found plugin ${name} as ${format}`);
-        return this.plugins[format];
+    // If cache is not empty, check for normalized versions too
+    if (Object.keys(this.plugins).length > 0) {
+      // Try normalized names if the exact name isn't available
+      const possibleFormats = this.getNormalizedPluginNames(name);
+      console.log(`🔍 REGISTRY: Checking cache for plugin ${name} in possible formats:`, possibleFormats);
+      
+      // Try each possible format
+      for (const format of possibleFormats) {
+        if (this.plugins[format]) {
+          console.log(`✅ REGISTRY: Found plugin ${name} as ${format} in cache`);
+          return this.plugins[format];
+        }
       }
     }
     
-    console.log(`❌ REGISTRY: Plugin ${name} not found in registry`);
-    
-    // Create fallback plugin info for missing plugins
-    const normalizedName = name.startsWith('@') ? name.split('/')[1] : name;
-    console.log(`🔄 REGISTRY: Generating fallback info for ${name}`);
-    
-    // Determine plugin type
-    let packageType = 'plugin';
-    let baseName = normalizedName;
-    
-    if (normalizedName.startsWith('adapter-')) {
-      packageType = 'adapter';
-      baseName = normalizedName.replace(/^adapter-/, '');
-    } else if (normalizedName.startsWith('client-')) {
-      packageType = 'client';
-      baseName = normalizedName.replace(/^client-/, '');
-    } else if (normalizedName.startsWith('plugin-')) {
-      baseName = normalizedName.replace(/^plugin-/, '');
+    // If we're here, we didn't find it in the cache
+    // Instead of loading all plugins, just try to fetch this single plugin
+    try {
+      console.log(`🔍 REGISTRY: Fetching specific plugin: ${name}`);
+      
+      // Get the possible formats/names
+      const possibleFormats = this.getNormalizedPluginNames(name);
+      console.log(`🔍 REGISTRY: Possible formats: ${possibleFormats.join(', ')}`);
+      
+      // Create minimal plugin info for just this plugin
+      const normalizedName = possibleFormats[0]; // Use the first format
+      const plugin = await this.fetchPluginDetails(normalizedName, {
+        name: normalizedName,
+        repository: `https://github.com/elizaos/${normalizedName.split('/')[1]}`
+      });
+      
+      // Cache this plugin for future use
+      if (plugin) {
+        this.plugins[normalizedName] = plugin;
+        console.log(`✅ REGISTRY: Successfully fetched plugin ${name}`);
+        return plugin;
+      }
+      
+      // If we couldn't get details for the plugin, generate fallback info
+      console.log(`🔄 REGISTRY: Generating fallback info for ${name}`);
+      const fallbackPlugin: PluginInfo = {
+        name: normalizedName,
+        description: `${normalizedName} plugin`,
+        version: 'latest',
+        repository: `https://github.com/elizaos/${normalizedName.split('/')[1]}`,
+        author: 'Eliza',
+        license: 'MIT',
+        dependencies: {},
+        requiredEnv: [],
+        documentation: `https://elizaos.github.io/eliza/packages/plugins/${normalizedName.split('/')[1]}/`,
+        importStatement: `import { ${this.capitalizeFirstLetter(normalizedName.split('/')[1].replace(/-./g, x => x[1].toUpperCase()))} } from '${normalizedName}';`
+      };
+      
+      this.plugins[normalizedName] = fallbackPlugin;
+      return fallbackPlugin;
+    } catch (error) {
+      console.log(`❌ REGISTRY: Error fetching specific plugin ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
-    
-    const fallbackInfo: PluginInfo = {
-      name: name,
-      description: `${this.capitalizeFirstLetter(packageType)} for ${baseName}`,
-      version: '0.1.0',
-      author: 'Eliza',
-      license: 'MIT',
-      repository: `https://github.com/elizaos-plugins/${normalizedName}`,
-      dependencies: {},
-      requiredEnv: [],
-      documentation: packageType === 'plugin' 
-        ? `https://elizaos.github.io/eliza/packages/${normalizedName}/`
-        : `https://elizaos.github.io/eliza/packages/${packageType}s/${baseName}/`,
-      importStatement: `import { ${this.capitalizeFirstLetter(baseName.replace(/-./g, x => x[1].toUpperCase()))} } from '${name}';`
-    };
-    
-    return fallbackInfo;
   }
   
   /**
@@ -416,15 +419,40 @@ export class PluginRegistry {
       const installDir = projectPath || process.cwd();
       console.log(chalk.gray(`Installing in directory: ${installDir}`));
       
-      // Check if we have pnpm
+      // Check for the required pnpm version (9.15.4)
       try {
-        execSync('pnpm --version', { stdio: 'ignore' });
+        const pnpmVersionOutput = execSync('pnpm --version', { encoding: 'utf8' }).trim();
+        
+        // Compare with required version
+        if (pnpmVersionOutput !== '9.15.4') {
+          console.error(chalk.red(`Error: Incorrect pnpm version detected. Required: 9.15.4, Current: ${pnpmVersionOutput}`));
+          console.error(chalk.yellow('Please install the correct version: npm install -g pnpm@9.15.4'));
+          return false;
+        }
+        
+        // Also check Node.js version
+        const nodeVersionOutput = execSync('node --version', { encoding: 'utf8' }).trim();
+        // Remove 'v' prefix for comparison
+        const nodeVersionWithoutV = nodeVersionOutput.startsWith('v') ? nodeVersionOutput.substring(1) : nodeVersionOutput;
+        
+        if (nodeVersionWithoutV !== '22.11.0') {
+          console.error(chalk.red(`Error: Incorrect Node.js version detected. Required: v22.11.0, Current: ${nodeVersionOutput}`));
+          console.error(chalk.yellow('Please use the correct Node.js version, for example with nvm:'));
+          console.error(chalk.yellow('  nvm install 22.11.0'));
+          console.error(chalk.yellow('  nvm use 22.11.0'));
+          return false;
+        }
         
         // Install using pnpm with the correct directory
+        console.log(chalk.blue(`Using pnpm ${pnpmVersionOutput} to install ${packageName}`));
         execSync(`cd "${installDir}" && pnpm add ${packageName}`, { stdio: 'inherit' });
       } catch (error) {
-        // Fallback to npm
-        execSync(`cd "${installDir}" && npm install ${packageName}`, { stdio: 'inherit' });
+        if (error instanceof Error && error.message.includes('pnpm --version')) {
+          console.error(chalk.red('Error: pnpm is not installed or not available in PATH'));
+          console.error(chalk.yellow('Please install pnpm version 9.15.4: npm install -g pnpm@9.15.4'));
+          return false;
+        }
+        throw error; // Re-throw for other errors
       }
       
       return true;

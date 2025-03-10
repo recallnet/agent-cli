@@ -42,7 +42,9 @@ export async function buildStrategy(options: any) {
     
     // Save the strategy implementation
     const strategyCodePath = path.join(strategyDir, `${safeName}.ts`);
-    fs.writeFileSync(strategyCodePath, result.implementation);
+    const implementationContent = result.implementation || 
+      '// Strategy implementation is not generated. Configure your strategy in code as needed.';
+    fs.writeFileSync(strategyCodePath, implementationContent);
     
     // Save a simple session history
     const sessionData = {

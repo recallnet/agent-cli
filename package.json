@@ -41,6 +41,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.18.0",
+    "@elizaos/plugin-coingecko": "^0.25.6-alpha.1",
+    "@elizaos/plugin-coinmarketcap": "^0.25.6-alpha.1",
     "@types/better-sqlite3": "^7.6.12",
     "axios": "^1.6.7",
     "better-sqlite3": "^11.8.1",
@@ -48,14 +50,17 @@
     "cheerio": "^1.0.0",
     "commander": "^12.0.0",
     "conf": "^12.0.0",
+    "diff": "^7.0.0",
     "dotenv": "^16.4.5",
     "inquirer": "^9.2.15",
     "jsdom": "^26.0.0",
+    "minimatch": "^10.0.1",
     "openai": "^4.28.4",
     "ora": "^7.0.1",
     "simple-git": "^3.22.0"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.1",
     "@types/inquirer": "^9.0.7",
     "@types/node": "^20.11.28",
     "@types/semver": "^7.5.8",

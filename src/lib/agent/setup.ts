@@ -11,6 +11,10 @@ import { CharacterConfig, generateCharacterForSetup } from './character.js';
 import { DocResponse } from '../mcp/server.js';
 import { checkSystemPrerequisites, validateProjectStructure } from './prerequisites.js';
 import { getInstalledPlugins, checkPluginCompatibility, installPlugin, PluginInfo, updateProjectStructure } from './plugin-compatibility.js';
+import { spawn, ChildProcess } from 'child_process';
+import readline from 'readline';
+import { createFilesystemClient } from '../mcp/servers/filesystem-integration.js';
+import { execPromise } from '../utils/exec-promise.js';
 
 /**
  * Setup session for tracking progress
@@ -138,6 +142,12 @@ export class AgentSetup {
           name: 'Agent Finalization',
           description: 'Finalizing your trading agent',
           status: 'pending'
+        },
+        {
+          id: 'agent-interaction',
+          name: 'Agent Interaction',
+          description: 'Starting your trading agent',
+          status: 'pending'
         }
       ],
       currentStep: 0,
@@ -184,15 +194,15 @@ export class AgentSetup {
       // Step 9: Agent Finalization
       await this.finalizeAgent();
       
-      // Set status to completed
-      this.session.status = 'completed';
-      this.saveSession();
+      // Step 10: Start Agent Interaction
+      await this.startAgentInteraction();
       
       return this.session;
     } catch (error) {
-      this.session.status = 'failed';
-      this.saveSession();
-      throw error;
+      this.spinner.fail(`Setup failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(chalk.red(`\n${error instanceof Error ? error.message : String(error)}`));
+      console.log(chalk.yellow('\nYou can still use the project manually.'));
+      return this.session;
     }
   }
   
@@ -880,11 +890,55 @@ Keep it clear and detailed but concise (less than 300 words).`;
         spinner.text = 'Updating project structure...';
         spinner.start();
         
-        // Convert installed plugins to PluginInfo format
-        const newlyInstalledPlugins = await getInstalledPlugins(this.session.projectPath);
+        // Create a FilesystemMcpClient with access to the project directory
+        const filesystemMcpClient = createFilesystemClient(
+          this.session.projectPath, 
+          this.mcpClient.getBaseUrl(),
+          this.mcpClient // Pass the original MCP client
+        );
         
-        // Update project structure
-        const structureResult = updateProjectStructure(this.session.projectPath, newlyInstalledPlugins);
+        // Get ONLY the newly installed plugins info
+        const newlyInstalledPluginsInfo = await Promise.all(
+          installedPluginNames.map(async pluginName => {
+            try {
+              // Try to get accurate plugin info for the newly installed plugin
+              const allPlugins = await getInstalledPlugins(this.session.projectPath);
+              const pluginInfo = allPlugins.find(p => p.name === pluginName);
+              
+              if (pluginInfo) {
+                return pluginInfo;
+              }
+              
+              // Fallback if plugin info not found
+              return {
+                name: pluginName,
+                version: 'latest',
+                description: 'Recently installed plugin',
+                dependencies: [],
+                installCommand: `pnpm add ${pluginName}`,
+                capabilities: []
+              };
+            } catch (error) {
+              // Fallback if there's an error
+              return {
+                name: pluginName,
+                version: 'latest',
+                description: 'Recently installed plugin',
+                dependencies: [],
+                installCommand: `pnpm add ${pluginName}`,
+                capabilities: []
+              };
+            }
+          })
+        );
+        
+        // Update project structure with LLM and MCP support - ONLY for newly installed plugins
+        const structureResult = await updateProjectStructure(
+          this.session.projectPath, 
+          newlyInstalledPluginsInfo,
+          this.llmProvider,
+          filesystemMcpClient // Use combined filesystem client with documentation access
+        );
         
         if (structureResult.success) {
           spinner.succeed(`Updated project structure for plugins (${structureResult.updatedFiles.length} files modified)`);
@@ -1007,7 +1061,7 @@ Keep it clear and detailed but concise (less than 300 words).`;
         description: this.session.tradingGoals || 'A trading strategy for crypto markets',
         timeframes: this.session.tradingGoalsAnalysis?.timeframes || [],
         indicators: this.session.tradingGoalsAnalysis?.indicators || [],
-        targetPlugins: this.session.installedPlugins || [],
+        targetPlugins: this.session.selectedPlugins || [],
         outputDir: path.join(this.session.projectPath, 'strategies')
       });
       
@@ -1018,7 +1072,9 @@ Keep it clear and detailed but concise (less than 300 words).`;
       
       // Save the strategy
       this.session.strategy = strategy.strategy;
-      this.session.strategyImplementation = strategy.implementation;
+      // Strategy implementation is now optional, so we set it to a placeholder if it's undefined
+      this.session.strategyImplementation = strategy.implementation || 
+        '// Strategy implementation is not generated. Configure your strategy in code as needed.';
       this.saveSession();
       
       this.completeStep('strategy-creation');
@@ -1141,6 +1197,257 @@ Generated with Recall CLI
       this.failStep('agent-finalization', error instanceof Error ? error.message : String(error));
       console.warn(`Agent finalization failed: ${error instanceof Error ? error.message : String(error)}`);
       console.log(chalk.yellow('Setup completed with warnings.'));
+    }
+  }
+  
+  /**
+   * Step 10: Start agent interaction
+   * Runs the agent and enables the CLI to act as a meta-agent
+   */
+  private async startAgentInteraction(): Promise<void> {
+    this.startStep('agent-interaction');
+    
+    try {
+      console.log(chalk.cyan('\n🤖 Starting agent to test your configuration...\n'));
+      
+      // Create a spinner for the agent startup
+      this.spinner.start('Preparing agent...');
+      
+      // Check if character file exists
+      const characterPath = path.join(this.session.projectPath, 'characters', 'eliza.character.json');
+      
+      if (!fs.existsSync(characterPath)) {
+        throw new Error(`Character file not found at ${characterPath}`);
+      }
+      
+      this.spinner.succeed('Agent configuration verified');
+      
+      // Check Node.js version
+      try {
+        const { stdout: nodeVersionOutput } = await execPromise('node --version');
+        const nodeVersionWithoutV = nodeVersionOutput.trim().startsWith('v') ? 
+          nodeVersionOutput.trim().substring(1) : nodeVersionOutput.trim();
+        
+        if (nodeVersionWithoutV !== '22.11.0') {
+          console.error(chalk.red(`Error: Incorrect Node.js version detected. Required: v22.11.0, Current: ${nodeVersionOutput.trim()}`));
+          console.error(chalk.yellow('Please use the correct Node.js version, for example with nvm:'));
+          console.error(chalk.yellow('  nvm install 22.11.0'));
+          console.error(chalk.yellow('  nvm use 22.11.0'));
+          throw new Error(`Incorrect Node.js version. Required: 22.11.0, Current: ${nodeVersionWithoutV}`);
+        }
+        
+        // Check pnpm version
+        const { stdout: pnpmVersionOutput } = await execPromise('pnpm --version');
+        const pnpmVersion = pnpmVersionOutput.trim();
+        
+        if (pnpmVersion !== '9.15.4') {
+          console.error(chalk.red(`Error: Incorrect pnpm version detected. Required: 9.15.4, Current: ${pnpmVersion}`));
+          console.error(chalk.yellow('Please install the correct version: npm install -g pnpm@9.15.4'));
+          throw new Error(`Incorrect pnpm version. Required: 9.15.4, Current: ${pnpmVersion}`);
+        }
+        
+        console.log(chalk.green(`✓ Using Node.js v${nodeVersionWithoutV} and pnpm ${pnpmVersion}`));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('Command failed')) {
+          console.error(chalk.red('Error: Could not determine Node.js or pnpm version'));
+          console.error(chalk.yellow('Please ensure Node.js v22.11.0 and pnpm 9.15.4 are installed and available in your PATH'));
+          throw new Error('Failed to verify Node.js and pnpm versions');
+        }
+        throw error;
+      }
+      
+      // Prepare command with colored output for visibility
+      console.log(chalk.gray('Starting agent with command:'));
+      console.log(chalk.cyan('pnpm start --characters=\'characters/eliza.character.json\''));
+      console.log(chalk.gray('Working directory:'));
+      console.log(chalk.cyan(this.session.projectPath));
+      console.log(chalk.gray('\nPlease wait while the agent initializes...\n'));
+      
+      // Start the agent process
+      const agentProcess = spawn('pnpm', ['start', '--characters=characters/eliza.character.json'], {
+        cwd: this.session.projectPath,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: true,
+        env: { ...process.env, FORCE_COLOR: 'true' }
+      });
+      
+      // Collect agent responses for context
+      let agentResponseBuffer = '';
+      
+      // Process startup phase
+      let agentStarted = false;
+      const startupTimeout = setTimeout(() => {
+        if (!agentStarted) {
+          console.log(chalk.yellow('\nAgent startup is taking longer than expected. This might be normal for the first run.'));
+          console.log(chalk.yellow('Please be patient while I continue monitoring...\n'));
+        }
+      }, 5000);
+      
+      // Handle agent output
+      agentProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        process.stdout.write(output);
+        
+        // Add to response buffer for context
+        agentResponseBuffer += output;
+        
+        // Keep buffer at a reasonable size
+        if (agentResponseBuffer.length > 10000) {
+          agentResponseBuffer = agentResponseBuffer.slice(-5000);
+        }
+        
+        // Detect when agent is ready
+        if (!agentStarted && (output.includes('Agent ready') || output.includes('started successfully'))) {
+          agentStarted = true;
+          clearTimeout(startupTimeout);
+          
+          // Once agent is started, begin meta-agent operation
+          console.log(chalk.green('\n✅ Agent started successfully!\n'));
+          console.log(chalk.cyan('🧠 I\'m now operating as the primary controller for your agent.'));
+          console.log(chalk.cyan('I\'ll use my knowledge of your setup to work with the agent automatically.'));
+          console.log(chalk.cyan('You can observe our interaction, and type "exit" at any time to stop.\n'));
+          
+          // Start the autonomous operation
+          this.beginAutonomousOperation(agentProcess, agentResponseBuffer);
+          
+          // Complete the setup step
+          this.completeStep('agent-interaction');
+        }
+      });
+      
+      // Handle agent errors
+      agentProcess.stderr.on('data', (data) => {
+        const error = data.toString();
+        process.stderr.write(chalk.red(error));
+        agentResponseBuffer += `ERROR: ${error}`;
+      });
+      
+      // Handle agent exit
+      agentProcess.on('close', (code) => {
+        if (code !== 0) {
+          console.log(chalk.red(`\nAgent process exited with code ${code}`));
+          this.failStep('agent-interaction', `Agent process exited with code ${code}`);
+        } else {
+          console.log(chalk.gray('\nAgent process has ended.'));
+          this.completeStep('agent-interaction');
+        }
+      });
+      
+      // Set up minimal user control
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      
+      rl.on('line', (line) => {
+        if (line.trim().toLowerCase() === 'exit' || line.trim().toLowerCase() === 'quit') {
+          console.log(chalk.gray('\nExiting meta-agent operation. Shutting down agent process...'));
+          agentProcess.kill();
+          rl.close();
+          process.exit(0);
+        }
+      });
+      
+      // Extend session lifetime to keep the process running
+      process.stdin.resume();
+      
+    } catch (error) {
+      this.failStep('agent-interaction', error instanceof Error ? error.message : String(error));
+      console.warn(`Agent interaction failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.log(chalk.yellow('You can still start the agent manually using:'));
+      console.log(chalk.yellow(`cd ${this.session.projectPath} && pnpm start --characters="characters/eliza.character.json"`));
+    }
+  }
+  
+  /**
+   * Begin autonomous operation as the meta-agent
+   * This method handles the continuous interaction with the agent
+   */
+  private async beginAutonomousOperation(agentProcess: ChildProcess, responseBuffer: string): Promise<void> {
+    // Initial context information
+    const pluginsInfo = this.session.installedPlugins?.join(', ') || 'Standard plugins';
+    const strategyName = this.session.strategy?.name || 'Custom Trading Strategy'; 
+    const tradingGoals = this.session.tradingGoals || 'Crypto trading and analysis';
+    
+    // Initial operation
+    setTimeout(async () => {
+      await this.performAgentOperation(agentProcess, responseBuffer, {
+        operation: 'initialize',
+        pluginsInfo,
+        strategyName,
+        tradingGoals
+      });
+    }, 2000);
+  }
+  
+  /**
+   * Perform a single agent operation cycle
+   */
+  private async performAgentOperation(
+    agentProcess: ChildProcess, 
+    responseBuffer: string, 
+    context: {
+      operation: string,
+      pluginsInfo: string,
+      strategyName: string,
+      tradingGoals: string
+    }
+  ): Promise<void> {
+    try {
+      // Generate the next command based on context
+      const basePrompt = 'You are acting as the primary operator of a crypto trading agent that has just been set up.\n\n';
+      
+      const contextInfo = 'CONTEXT:\n' +
+        `- The agent uses these plugins: ${context.pluginsInfo}\n` +
+        `- The agent implements a strategy called: ${context.strategyName}\n` +
+        `- The trading goals are: ${context.tradingGoals}\n\n`;
+      
+      const recentOutput = responseBuffer ? 
+        `RECENT AGENT OUTPUT:\n${responseBuffer.slice(-2000)}\n\n` : 
+        '\n';
+      
+      const operationInfo = `CURRENT OPERATION: ${context.operation}\n\n`;
+      
+      const initializePrompt = 'As the first operation, introduce yourself to the agent and ask it about its ' +
+        'capabilities related to the strategy and plugins. Ask it to describe what data it can provide for your strategy.';
+      
+      const continuePrompt = 'Based on the recent agent output, decide what operation to perform next that would ' +
+        'showcase the agent\'s capabilities or extract useful information about markets or the strategy.';
+      
+      const operationDirective = context.operation === 'initialize' ? initializePrompt : continuePrompt;
+      
+      const finalInstructions = '\n\nRespond with ONLY the exact text to send to the agent. ' +
+        'Do not include explanations, markdown, or any other text that shouldn\'t be sent directly to the agent.';
+      
+      // Combine all parts to create the full prompt
+      const promptText = basePrompt + contextInfo + recentOutput + operationInfo + operationDirective + finalInstructions;
+      
+      // Get the next command from the LLM
+      const response = await this.llmProvider.prompt(promptText, { maxTokens: 250 });
+      const command = response.content.trim();
+      
+      // Display meta-agent action
+      console.log(chalk.cyan('\n🧠 Meta-Agent Action: ') + chalk.white(command));
+      
+      // Send command to the agent
+      if (agentProcess.stdin && agentProcess.stdin.writable) {
+        agentProcess.stdin.write(command + '\n');
+        
+        // Schedule next operation after a delay
+        setTimeout(() => {
+          this.performAgentOperation(agentProcess, responseBuffer, {
+            ...context,
+            operation: 'continue' // Future operations are continuations
+          });
+        }, 20000); // 20 seconds between operations
+      }
+    } catch (error) {
+      console.error(chalk.red(`Error during meta-agent operation: ${error instanceof Error ? error.message : String(error)}`));
+      
+      // Try again after a delay
+      setTimeout(() => {
+        this.performAgentOperation(agentProcess, responseBuffer, context);
+      }, 30000);
     }
   }
   
